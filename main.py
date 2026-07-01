@@ -26,7 +26,7 @@ class ChatRequest(BaseModel):
 @app.post("/chat")
 async def chat(req: ChatRequest):
     completion = client.chat.completions.create(
-        model="llama-3.1-70b-versatile", # fastest + best free Groq model
+        model="llama-3.3-70b-versatile", # fastest + best free Groq model
         messages=[
             {"role": "system", "content": "You are a helpful AI. Be brief, warm, and direct."},
             {"role": "user", "content": req.message}
