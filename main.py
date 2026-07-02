@@ -1,41 +1,36 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from groq import Groq
 import os
-from dotenv import load_dotenv
-
-load_dotenv() # loads.env locally. On Render use Environment Variables
+from groq import Groq
 
 app = FastAPI()
 
-# Let Flutter call your API
+# 1. CORS - Allow your Flutter app to call it
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # change to your app domain later
-    allow_methods=["POST"],
+    allow_origins=["*"], # For prod: change to ["https://yourapp.com"]
+    allow_credentials=True,
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Key is loaded ONLY on the server. Flutter can't access this.
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+SYSTEM_PROMPT = "You are AiMentor, a helpful and friendly AI assistant from Lagos." # 2. Personality
 
 class ChatRequest(BaseModel):
     message: str
 
 @app.post("/chat")
-async def chat(req: ChatRequest):
-    completion = client.chat.completions.create(
-        model="llama-3.3-70b-versatile", # fastest + best free Groq model
-        messages=[
-            {"role": "system", "content": "You are a helpful AI. Be brief, warm, and direct."},
-            {"role": "user", "content": req.message}
-        ],
-        max_tokens=512,
-        temperature=0.7,
-    )
-    return {"reply": completion.choices[0].message.content}
-
-@app.get("/")
-def health():
-    return {"status": "ok"} # used for UptimeRobot to prevent cold starts
+def chat(req: ChatRequest):
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": req.message}
+            ],
+        )
+        return {"reply": response.choices[0].message.content}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
