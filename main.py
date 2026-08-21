@@ -2,21 +2,23 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
+import traceback
 from groq import Groq
 
 app = FastAPI()
 
-# 1. CORS - Allow your Flutter app to call it
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # For prod: change to ["https://yourapp.com"]
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-SYSTEM_PROMPT = "You are AiMentor, a helpful and friendly AI assistant from Lagos." # 2. Personality
+print("GROQ KEY LOADED:", os.getenv("GROQ_API_KEY")[:10]) # Check logs
+
+SYSTEM_PROMPT = "You are AiMentor, a helpful and friendly AI assistant"
 
 class ChatRequest(BaseModel):
     message: str
@@ -24,8 +26,9 @@ class ChatRequest(BaseModel):
 @app.post("/chat")
 def chat(req: ChatRequest):
     try:
+        print("Received:", req.message)
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama3-70b-8192", # FIXED MODEL NAME
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": req.message}
@@ -33,4 +36,6 @@ def chat(req: ChatRequest):
         )
         return {"reply": response.choices[0].message.content}
     except Exception as e:
+        print("ERROR:", str(e))
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
