@@ -18,7 +18,7 @@ app.add_middleware(
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 print("GROQ KEY LOADED:", os.getenv("GROQ_API_KEY")[:10]) # Check logs
 
-SYSTEM_PROMPT = "You are AiMentor, a helpful and friendly AI assistant"
+SYSTEM_PROMPT = "You are an AI GROQ model, you are chatting in an app built by OBANOR through API call"
 
 class ChatRequest(BaseModel):
     message: str
@@ -28,7 +28,7 @@ def chat(req: ChatRequest):
     try:
         print("Received:", req.message)
         response = client.chat.completions.create(
-            model="llama3-70b-8192", # FIXED MODEL NAME
+            model="llama3-1-70b-versatile"
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": req.message}
