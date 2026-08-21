@@ -28,7 +28,7 @@ def chat(req: ChatRequest):
     try:
         print("Received:", req.message)
         response = client.chat.completions.create(
-            model="gemma2-9b-it",
+            model="openai/gpt-oss-20b",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": req.message}
