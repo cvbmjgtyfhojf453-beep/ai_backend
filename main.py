@@ -28,7 +28,7 @@ def chat(req: ChatRequest):
     try:
         print("Received:", req.message)
         response = client.chat.completions.create(
-            model="llama3-1-70b-versatile"
+            model="llama3-1-70b-versatile",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": req.message}
