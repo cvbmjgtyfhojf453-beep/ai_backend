@@ -1,9 +1,10 @@
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from groq import Groq
-from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Dict
+import traceback
 
 app = FastAPI(title="HiveAI Backend")
 
@@ -16,34 +17,41 @@ app.add_middleware(
 )
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+
+# Use IP + User-Agent as "user_id" since Android doesn't send one
 memory_hive: Dict[str, List[dict]] = {}
 
-class ChatRequest(BaseModel):
-    user_id: str
-    message: Optional[str] = "" # <-- make it optional so clear works
-
-class ChatResponse(BaseModel):
-    reply: str
-    history: List[dict]
-
 SYSTEM_PROMPT = "You are HiveAI, a helpful and friendly assistant. Remember context from previous messages. Be concise."
+
+def get_user_id(request: Request) -> str:
+    # fallback: use client IP if no user_id sent
+    client_ip = request.client.host if request.client else "unknown"
+    return f"user_{client_ip}"
 
 @app.get("/")
 def health():
     return {"status": "ok"}
 
-@app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
+@app.post("/chat")
+async def chat(request: Request):
     try:
-        user_id = req.user_id
+        body = await request.json()
+        print("RECEIVED BODY:", body)
+
+        message = body.get("message", "")
+        user_id = get_user_id(request) # auto generate user_id
+
         if user_id not in memory_hive:
             memory_hive[user_id] = []
 
-        memory_hive[user_id].append({"role": "user", "content": req.message})
+        # 1. Add user message
+        memory_hive[user_id].append({"role": "user", "content": message})
 
+        # 2. Build messages with system prompt + last 10
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages.extend(memory_hive[user_id][-10:])
 
+        # 3. Call Groq
         response = client.chat.completions.create(
             model="openai/gpt-oss-20b",
             messages=messages,
@@ -52,16 +60,22 @@ def chat(req: ChatRequest):
         )
 
         ai_reply = response.choices[0].message.content
+
+        # 4. Save AI reply
         memory_hive[user_id].append({"role": "assistant", "content": ai_reply})
 
-        return ChatResponse(reply=ai_reply, history=memory_hive[user_id])
+        return {"reply": ai_reply}
 
     except Exception as e:
-        print(f"ERROR: {e}") # check Render logs
-        raise HTTPException(status_code=500, detail=str(e))
+        print("ERROR:", e)
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/clear-history")
-def clear_history(req: ChatRequest): # <-- now accepts same ChatRequest
-    if req.user_id in memory_hive:
-        memory_hive[req.user_id] = []
-    return {"status": "cleared", "user_id": req.user_id}
+async def clear_history(request: Request):
+    try:
+        user_id = get_user_id(request)
+        if user_id in memory_hive:
+            memory_hive[user_id] = []
+        return {"status": "cleared"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
