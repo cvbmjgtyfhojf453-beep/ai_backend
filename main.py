@@ -13,6 +13,15 @@ import psycopg2
 from pgvector.psycopg2 import register_vector
 from sentence_transformers import SentenceTransformer
 
+app = FastAPI()
+embed_model = None # Don't load on startup
+
+def get_embed_model():
+    global embed_model
+    if embed_model is None:
+        # This is the smallest model. 22MB
+        embed_model = SentenceTransformer('paraphrase-MiniLM-L3-v2', device='cpu')
+    return embed_model
 
 load_dotenv()
 
