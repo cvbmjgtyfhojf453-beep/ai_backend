@@ -37,7 +37,7 @@ if not GROQ_API_KEY or not DATABASE_URL:
     raise ValueError("Missing GROQ_API_KEY or DATABASE_URL in environment variables")
 
 client = Groq(api_key=GROQ_API_KEY)
-embed_model = SentenceTransformer('all-MiniLM-L6-v2') # 384 dimension
+embed_model = None
 
 # ========== DB SETUP ==========
 def get_db_connection():
