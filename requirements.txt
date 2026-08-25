@@ -3,3 +3,6 @@ uvicorn[standard]==0.30.6
 groq==0.4.2
 httpx==0.23.3
 python-dotenv==1.0.1
+psycopg2-binary
+pgvector
+sentence-transformers
