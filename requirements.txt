@@ -5,4 +5,3 @@ fastapi==0.115.0
 groq==0.9.0
 psycopg2-binary==2.9.9
 pgvector==0.3.2
-sentence-transformers==3.0.1

@@ -1,5 +1,4 @@
 from dotenv import load_dotenv
-import os
 from fastapi.responses import JSONResponse
 from typing import List, Dict
 import traceback
@@ -11,17 +10,20 @@ from pydantic import BaseModel
 from groq import Groq
 import psycopg2
 from pgvector.psycopg2 import register_vector
-from sentence_transformers import SentenceTransformer
+import httpx
+import os
 
-app = FastAPI()
-embed_model = None # Don't load on startup
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-def get_embed_model():
-    global embed_model
-    if embed_model is None:
-        # This is the smallest model. 22MB
-        embed_model = SentenceTransformer('paraphrase-MiniLM-L3-v2', device='cpu')
-    return embed_model
+async def embed_text(text: str):
+    async with httpx.AsyncClient() as client:
+        res = await client.post(
+            "https://api.groq.com/openai/v1/embeddings",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={"model": "text-embedding-3-small", "input": text}
+        )
+    return res.json()["data"][0]["embedding"]
+
 
 load_dotenv()
 
