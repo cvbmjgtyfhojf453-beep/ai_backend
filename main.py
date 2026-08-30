@@ -5,6 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
+import bcrypt
+import jwt
 import httpx
 import os, json, uuid
 from datetime import datetime, timedelta
@@ -231,3 +233,35 @@ def proactive_check():
 
 scheduler.add_job(proactive_check, 'interval', minutes=30)
 scheduler.start()
+
+app = FastAPI()
+
+JWT_SECRET = os.getenv("JWT_SECRET", "supersecret")
+
+class UserCreate(BaseModel):
+    email: str
+    password: str
+
+# FAKE DB for now - later we connect to Postgres
+users_db = {}
+
+@app.post("/auth/register")
+def register(user: UserCreate):
+    if user.email in users_db:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    hashed = bcrypt.hashpw(user.password.encode(), bcrypt.gensalt())
+    user_id = str(uuid.uuid4())
+    users_db[user.email] = {"id": user_id, "email": user.email, "password": hashed}
+    
+    token = jwt.encode({"sub": user_id, "exp": datetime.utcnow() + timedelta(days=7)}, JWT_SECRET, algorithm="HS256")
+    return {"access_token": token}
+
+@app.post("/auth/login")
+def login(user: UserCreate):
+    db_user = users_db.get(user.email)
+    if not db_user or not bcrypt.checkpw(user.password.encode(), db_user["password"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    token = jwt.encode({"sub": db_user["id"], "exp": datetime.utcnow() + timedelta(days=7)}, JWT_SECRET, algorithm="HS256")
+    return {"access_token": token}

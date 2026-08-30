@@ -18,3 +18,5 @@ googleapis-common-protos==1.68.0
 playwright==1.40.0 # #37 Browser
 apscheduler==3.10.4 #22 Cron
 cloudinary==1.36.0 # for files
+bcrypt
+pyjwt
