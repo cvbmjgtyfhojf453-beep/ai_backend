@@ -20,3 +20,4 @@ apscheduler==3.10.4 #22 Cron
 cloudinary==1.36.0 # for files
 bcrypt
 pyjwt
+pydantic
