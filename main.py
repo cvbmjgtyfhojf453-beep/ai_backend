@@ -25,7 +25,7 @@ import requests
 from apscheduler.schedulers.background import BackgroundScheduler #22 Proactive
 from google.oauth2.credentials import Credentials #28 Calendar
 from googleapiclient.discovery import build
-from playwright.sync_api import sync_playwright #37 Browser
+#from playwright.sync_api import sync_playwright #37 Browser
 import cloudinary
 import cloudinary.uploader
 from dotenv import load_dotenv
@@ -179,15 +179,15 @@ def email_summary(user_id: str = Depends(get_user)):
 def web_search(query: str):
     return requests.post("https://api.tavily.com/search", json={"api_key":os.getenv("TAVILY_KEY"),"query":query}).json()
 
-@app.post("/browser/book") #37
-def browser_book(url: str, action: str):
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto(url)
-        # page.click(action)
-        browser.close()
-    return {"status":"done"}
+#@app.post("/browser/book") #37
+#def browser_book(url: str, action: str):
+ #   with sync_playwright() as p:
+ #       browser = p.chromium.launch(headless=True)
+ #      page = browser.new_page()
+ #       page.goto(url)
+ #       # page.click(action)
+ #       browser.close()
+ #   return {"status":"done"}
 
 # ====== TIER 6-7-8: SOCIAL + DEV + SAFETY ======
 @app.post("/contact")
