@@ -234,7 +234,6 @@ def proactive_check():
 scheduler.add_job(proactive_check, 'interval', minutes=30)
 scheduler.start()
 
-app = FastAPI()
 
 JWT_SECRET = os.getenv("JWT_SECRET", "supersecret")
 
