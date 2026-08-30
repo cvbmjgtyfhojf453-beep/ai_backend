@@ -5,3 +5,16 @@ fastapi==0.115.0
 groq==0.9.0
 psycopg2-binary==2.9.9
 pgvector==0.3.2
+slowapi==0.1.9
+python-multipart==0.0.9
+pypdf==4.3.1
+python-docx==1.1.2
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+requests==2.32.3
+google-api-python-client==2.140.0 # #28 Calendar
+google-auth-oauthlib==1.2.2
+googleapis-common-protos==1.68.0
+playwright==1.40.0 # #37 Browser
+apscheduler==3.10.4 #22 Cron
+cloudinary==1.36.0 # for files
