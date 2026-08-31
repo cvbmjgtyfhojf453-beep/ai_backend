@@ -80,6 +80,18 @@ def login(request: Request, email: str, password: str):
         raise HTTPException(401, "Invalid credentials")
     token = jwt.encode({"sub": str(user['id']), "exp": datetime.utcnow() + timedelta(days=7)}, os.getenv("SECRET_KEY"), algorithm="HS256")
     return {"access_token": token, "token_type": "bearer"}
+    
+def get_current_user(authorization: str = Header(None)):
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing token")
+    token = authorization.replace("Bearer ", "")
+    payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+    return payload["sub"]
+
+@app.post("/chat")
+def chat(message: dict, user_id: str = Depends(get_current_user)):
+    # For now just echo back + save to memory
+    return {"user_id": user_id, "reply": f"You said: {message['message']}"}
 
 def get_user(token: str = Depends(oauth2)):
     try:
