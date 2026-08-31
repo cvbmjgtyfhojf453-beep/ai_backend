@@ -39,6 +39,8 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+JWT_SECRET = os.getenv("JWT_SECRET", "supersecret")
+
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 oauth2 = OAuth2PasswordBearer(tokenUrl="token")
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -247,7 +249,7 @@ scheduler.add_job(proactive_check, 'interval', minutes=30)
 scheduler.start()
 
 
-JWT_SECRET = os.getenv("JWT_SECRET", "supersecret")
+
 
 class UserCreate(BaseModel):
     email: str
