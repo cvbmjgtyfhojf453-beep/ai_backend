@@ -10,7 +10,7 @@ import jwt
 import httpx
 import os, json, uuid
 from datetime import datetime, timedelta
-from fastapi import FastAPI, UploadFile, Depends, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, UploadFile, Depends, HTTPException, Request, BackgroundTasks, Header
 from fastapi.security import OAuth2PasswordBearer
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -80,7 +80,7 @@ def login(request: Request, email: str, password: str):
         raise HTTPException(401, "Invalid credentials")
     token = jwt.encode({"sub": str(user['id']), "exp": datetime.utcnow() + timedelta(days=7)}, os.getenv("SECRET_KEY"), algorithm="HS256")
     return {"access_token": token, "token_type": "bearer"}
-    
+
 def get_current_user(authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing token")
