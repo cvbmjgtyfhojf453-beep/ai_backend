@@ -90,17 +90,6 @@ def get_current_user(authorization: str = Header(None)):
     payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     return payload["sub"]
 
-@app.post("/chat")
-def chat(message: dict, user_id: str = Depends(get_current_user)):
-    # For now just echo back + save to memory
-    return {"user_id": user_id, "reply": f"You said: {message['message']}"}
-
-def get_user(token: str = Depends(oauth2)):
-    try:
-        payload = jwt.decode(token, os.getenv("SECRET_KEY"), algorithms=["HS256"])
-        return payload["sub"]
-    except:
-        raise HTTPException(401, "Invalid token")
 
 # ====== MEMORY HELPERS ======
 def embed_text(text: str):
