@@ -31,6 +31,26 @@ from googleapiclient.discovery import build
 import cloudinary
 import cloudinary.uploader
 from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
+from pgvector.sqlalchemy import Vector
+from sqlalchemy.orm import sessionmaker
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+engine = create_engine(DATABASE_URL)
+Session = sessionmaker(bind=engine)
+
+# Create tables if they don't exist
+with engine.connect() as conn:
+    conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS memories (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT,
+            content TEXT,
+            embedding VECTOR(1536)
+        )
+    """))
+    conn.commit()
 
 load_dotenv()
 
@@ -236,34 +256,3 @@ def proactive_check():
 
 scheduler.add_job(proactive_check, 'interval', minutes=30)
 scheduler.start()
-
-
-
-
-class UserCreate(BaseModel):
-    email: str
-    password: str
-
-# FAKE DB for now - later we connect to Postgres
-users_db = {}
-
-@app.post("/auth/register")
-def register(user: UserCreate):
-    if user.email in users_db:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    hashed = bcrypt.hashpw(user.password.encode(), bcrypt.gensalt())
-    user_id = str(uuid.uuid4())
-    users_db[user.email] = {"id": user_id, "email": user.email, "password": hashed}
-    
-    token = jwt.encode({"sub": user_id, "exp": datetime.utcnow() + timedelta(days=7)}, JWT_SECRET, algorithm="HS256")
-    return {"access_token": token}
-
-@app.post("/auth/login")
-def login(user: UserCreate):
-    db_user = users_db.get(user.email)
-    if not db_user or not bcrypt.checkpw(user.password.encode(), db_user["password"]):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    
-    token = jwt.encode({"sub": db_user["id"], "exp": datetime.utcnow() + timedelta(days=7)}, JWT_SECRET, algorithm="HS256")
-    return {"access_token": token}
