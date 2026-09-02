@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 import bcrypt
-import jwt
+from jose import jwt
 import httpx
 import os, json, uuid
 from datetime import datetime, timedelta
