@@ -2,15 +2,15 @@ from fastapi.responses import JSONResponse
 from typing import List, Dict
 import traceback
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, HTTPException
-from fastapi import FastAPI, Request
 from pydantic import BaseModel
 import bcrypt
-from jose import jwt
 import httpx
+from sqlalchemy import create_engine, text
+from pgvector.sqlalchemy import Vector
+from sqlalchemy.orm import sessionmaker
 import os, json, uuid
 from datetime import datetime, timedelta
-from fastapi import FastAPI, UploadFile, Depends, HTTPException, Request, BackgroundTasks, Header
+from fastapi import FastAPI, UploadFile, Depends, HTTPException, Request, BackgroundTasks
 from fastapi.security import OAuth2PasswordBearer
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -27,30 +27,10 @@ import requests
 from apscheduler.schedulers.background import BackgroundScheduler #22 Proactive
 from google.oauth2.credentials import Credentials #28 Calendar
 from googleapiclient.discovery import build
-#from playwright.sync_api import sync_playwright #37 Browser
+# from playwright.sync_api import sync_playwright #37 Browser
 import cloudinary
 import cloudinary.uploader
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
-from pgvector.sqlalchemy import Vector
-from sqlalchemy.orm import sessionmaker
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DATABASE_URL)
-Session = sessionmaker(bind=engine)
-
-# Create tables if they don't exist
-with engine.connect() as conn:
-    conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-    conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS memories (
-            id SERIAL PRIMARY KEY,
-            user_id TEXT,
-            content TEXT,
-            embedding VECTOR(1536)
-        )
-    """))
-    conn.commit()
 
 load_dotenv()
 
@@ -58,8 +38,6 @@ app = FastAPI(title="AI OS Backend - Tier 1-8")
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-JWT_SECRET = os.getenv("JWT_SECRET", "supersecret")
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 oauth2 = OAuth2PasswordBearer(tokenUrl="token")
@@ -103,13 +81,12 @@ def login(request: Request, email: str, password: str):
     token = jwt.encode({"sub": str(user['id']), "exp": datetime.utcnow() + timedelta(days=7)}, os.getenv("SECRET_KEY"), algorithm="HS256")
     return {"access_token": token, "token_type": "bearer"}
 
-def get_user(authorization: str = Header(None)):
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing token")
-    token = authorization.replace("Bearer ", "")
-    payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    return payload["sub"]
-
+def get_user(token: str = Depends(oauth2)):
+    try:
+        payload = jwt.decode(token, os.getenv("SECRET_KEY"), algorithms=["HS256"])
+        return payload["sub"]
+    except:
+        raise HTTPException(401, "Invalid token")
 
 # ====== MEMORY HELPERS ======
 def embed_text(text: str):
@@ -206,13 +183,13 @@ def web_search(query: str):
 
 #@app.post("/browser/book") #37
 #def browser_book(url: str, action: str):
- #   with sync_playwright() as p:
- #       browser = p.chromium.launch(headless=True)
- #      page = browser.new_page()
- #       page.goto(url)
- #       # page.click(action)
- #       browser.close()
- #   return {"status":"done"}
+   # with sync_playwright() as p:
+      #  browser = p.chromium.launch(headless=True)
+       # page = browser.new_page()
+       # page.goto(url)
+        # page.click(action)
+       # browser.close()
+   # return {"status":"done"}
 
 # ====== TIER 6-7-8: SOCIAL + DEV + SAFETY ======
 @app.post("/contact")
