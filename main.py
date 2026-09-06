@@ -20,6 +20,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from pgvector.psycopg2 import register_vector
 from pypdf import PdfReader
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from docx import Document
 from jose import jwt
 from passlib.context import CryptContext #52 Auth
@@ -44,10 +45,156 @@ oauth2 = OAuth2PasswordBearer(tokenUrl="token")
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 scheduler = BackgroundScheduler()
 
+# DB + VECTOR - Auto create tables
+import psycopg2
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+def create_tables():
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+    cur = conn.cursor()
+    
+    sql = """
+    -- 1. EXTENSION FIRST
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- 2. TABLES SECOND  
+CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY, email TEXT UNIQUE, password_hash TEXT);
+CREATE TABLE IF NOT EXISTS memories (id UUID PRIMARY KEY, user_id UUID, content TEXT, embedding vector(1536), category TEXT, importance FLOAT, emotion TEXT, privacy_mode BOOLEAN);
+CREATE TABLE IF NOT EXISTS memory_hive (user_id UUID PRIMARY KEY, summary JSONB);
+CREATE TABLE IF NOT EXISTS tasks (id UUID PRIMARY KEY, user_id UUID, title TEXT, due_at TIMESTAMP, done BOOLEAN);
+CREATE TABLE IF NOT EXISTS contacts (id UUID PRIMARY KEY, user_id UUID, name TEXT, notes TEXT);
+CREATE TABLE IF NOT EXISTS webhooks (id UUID PRIMARY KEY, user_id UUID, trigger TEXT, action TEXT);
+CREATE TABLE IF NOT EXISTS backups (id UUID PRIMARY KEY, created_at TIMESTAMP, url TEXT);
+
+
+-- ENABLE UUID EXTENSION
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- TIER 1: USERS + PROFILES
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE profiles (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    full_name TEXT,
+    avatar_url TEXT,
+    bio TEXT,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- TIER 2: FRIENDS + BLOCKS
+CREATE TABLE friendships (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    friend_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    status TEXT DEFAULT 'pending' CHECK (status IN ('pending','accepted','blocked')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, friend_id),
+    CHECK (user_id != friend_id)
+);
+
+-- TIER 3: POSTS
+CREATE TABLE posts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    image_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- TIER 4: COMMENTS + LIKES
+CREATE TABLE comments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    post_id UUID REFERENCES posts(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE likes (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    post_id UUID REFERENCES posts(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(post_id, user_id)
+);
+
+-- TIER 5: CHATS + MESSAGES
+CREATE TABLE chats (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    is_group BOOLEAN DEFAULT FALSE,
+    name TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE chat_participants (
+    chat_id UUID REFERENCES chats(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    joined_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (chat_id, user_id)
+);
+
+CREATE TABLE messages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    chat_id UUID REFERENCES chats(id) ON DELETE CASCADE,
+    sender_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    content TEXT,
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- TIER 6-8: INDEXES FOR PERFORMANCE
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_posts_user_id ON posts(user_id);
+CREATE INDEX idx_posts_created_at ON posts(created_at DESC);
+CREATE INDEX idx_comments_post_id ON comments(post_id);
+CREATE INDEX idx_likes_post_id ON likes(post_id);
+CREATE INDEX idx_messages_chat_id ON messages(chat_id);
+CREATE INDEX idx_messages_created_at ON messages(created_at DESC);
+CREATE INDEX idx_friendships_user_id ON friendships(user_id);
+CREATE INDEX idx_friendships_friend_id ON friendships(friend_id);
+CREATE INDEX idx_friendships_status ON friendships(status);
+
+-- TIER 7: AUTO UPDATE updated_at TRIGGER
+CREATE OR REPLACE FUNCTION trigger_set_timestamp()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER set_timestamp_users BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
+CREATE TRIGGER set_timestamp_profiles BEFORE UPDATE ON profiles FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
+CREATE TRIGGER set_timestamp_posts BEFORE UPDATE ON posts FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
+CREATE TRIGGER set_timestamp_comments BEFORE UPDATE ON comments FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
+CREATE TRIGGER set_timestamp_chats BEFORE UPDATE ON chats FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
+CREATE TRIGGER set_timestamp_friendships BEFORE UPDATE ON friendships FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
+
+    """
+    cur.execute(sql)
+    cur.close()
+    conn.close()
+    print("Tables created/verified ✅")
+
+create_tables()
+
 # DB + VECTOR
-conn = psycopg2.connect(os.getenv("DATABASE_URL"), sslmode='require')
-register_vector(conn)
-cur = conn.cursor()
+#conn = psycopg2.connect(os.getenv("DATABASE_URL"), sslmode='require')
+#register_vector(conn)
+#cur = conn.cursor()
 
 # CLOUDINARY
 cloudinary.config(
