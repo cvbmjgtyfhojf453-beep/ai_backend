@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS backups (id UUID PRIMARY KEY, created_at TIMESTAMP, u
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- TIER 1: USERS + PROFILES
-CREATE TABLE users (
+CREATE TABLE users2 (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
