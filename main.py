@@ -177,11 +177,11 @@ END;
 $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS set_timestamp_users ON users;
-DROP TRIGGER IF EXISTS set_timestamp_users ON profiles;
-DROP TRIGGER IF EXISTS set_timestamp_users ON posts;
-DROP TRIGGER IF EXISTS set_timestamp_users ON comments;
-DROP TRIGGER IF EXISTS set_timestamp_users ON chats;
-DROP TRIGGER IF EXISTS set_timestamp_users ON friendships;
+DROP TRIGGER IF EXISTS set_timestamp_profiles ON profiles;
+DROP TRIGGER IF EXISTS set_timestamp_posts ON posts;
+DROP TRIGGER IF EXISTS set_timestamp_comments ON comments;
+DROP TRIGGER IF EXISTS set_timestamp_chats ON chats;
+DROP TRIGGER IF EXISTS set_timestamp_friendships ON friendships;
 
 CREATE TRIGGER set_timestamp_users BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
 CREATE TRIGGER set_timestamp_profiles BEFORE UPDATE ON profiles FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
