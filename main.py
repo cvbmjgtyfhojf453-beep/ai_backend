@@ -213,8 +213,9 @@ cloudinary.config(
 # ====== AUTH #52 ======
 @app.post("/register")
 @limiter.limit("5/minute")
-def register(request: Request, email: str, password: str):
-    password = password[:72]  # FIX #1: Truncate for bcrypt
+def register(user: UserCreate):  # CHANGED THIS LINE
+#def register(request: Request, email: str, password: str):
+    password = user.password[:72]  # FIX #1: Truncate for bcrypt
     hash = pwd.hash(password)
     user_id = str(uuid.uuid4())  # FIX #2: Generate ID
 
