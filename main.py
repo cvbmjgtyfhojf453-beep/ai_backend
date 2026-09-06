@@ -168,7 +168,7 @@ CREATE INDEX IF NOT EXISTS idx_friendships_friend_id ON friendships(friend_id);
 CREATE INDEX IF NOT EXISTS idx_friendships_status ON friendships(status);
 
 -- TIER 7: AUTO UPDATE updated_at TRIGGER
-CREATE IF NOT EXISTS OR REPLACE FUNCTION trigger_set_timestamp()
+CREATE OR REPLACE FUNCTION trigger_set_timestamp()
 RETURNS TRIGGER AS $$
 BEGIN
   NEW.updated_at = NOW();
