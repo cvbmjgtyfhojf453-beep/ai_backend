@@ -61,7 +61,7 @@ def create_tables():
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- 2. TABLES SECOND  
-CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY, email TEXT UNIQUE, password_hash TEXT);
+-- CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY, email TEXT UNIQUE, password_hash TEXT);
 CREATE TABLE IF NOT EXISTS memories (id UUID PRIMARY KEY, user_id UUID, content TEXT, embedding vector(1536), category TEXT, importance FLOAT, emotion TEXT, privacy_mode BOOLEAN);
 CREATE TABLE IF NOT EXISTS memory_hive (user_id UUID PRIMARY KEY, summary JSONB);
 CREATE TABLE IF NOT EXISTS tasks (id UUID PRIMARY KEY, user_id UUID, title TEXT, due_at TIMESTAMP, done BOOLEAN);
