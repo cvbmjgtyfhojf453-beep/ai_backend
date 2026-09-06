@@ -211,23 +211,26 @@ cloudinary.config(
 )
 
 # ====== AUTH #52 ======
-@app.post("/register")
-@limiter.limit("5/minute")
-def register(user: UserCreate):  # CHANGED THIS LINE
-#def register(request: Request, email: str, password: str):
-    password = user.password[:72]  # FIX #1: Truncate for bcrypt
-    hash = pwd.hash(password)
-    user_id = str(uuid.uuid4())  # FIX #2: Generate ID
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    @app.post("/register")
+    @limiter.limit("5/minute")
+    def register(user: UserCreate):  # CHANGED THIS LINE
+    #def register(request: Request, email: str, password: str):
+        password = user.password[:72]  # FIX #1: Truncate for bcrypt
+        hash = pwd.hash(password)
+        user_id = str(uuid.uuid4())  # FIX #2: Generate ID
 
-    try:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO users (id,email,password_hash) VALUES (%s,%s,%s)", (uuid.uuid4(), email, hash))
-            conn.commit()
-        #return {"status":"user created"}
-        return {"user_id": user_id, "message": "User created successfully"}  # FIX #4: Return the ID
-    except:
-        conn.rollback()
-        raise HTTPException(409, "Email already exists")
+        try:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO users (id,email,password_hash) VALUES (%s,%s,%s)", (uuid.uuid4(), email, hash))
+                conn.commit()
+            #return {"status":"user created"}
+            return {"user_id": user_id, "message": "User created successfully"}  # FIX #4: Return the ID
+        except:
+            conn.rollback()
+            raise HTTPException(409, "Email already exists")
 
 @app.post("/token")
 @limiter.limit("10/minute")
