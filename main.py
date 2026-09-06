@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS backups (id UUID PRIMARY KEY, created_at TIMESTAMP, u
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- TIER 1: USERS + PROFILES
-CREATE TABLE users2 (
+CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
@@ -82,7 +82,7 @@ CREATE TABLE users2 (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE profiles (
+CREATE TABLE IF NOT EXISTS profiles (
     user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     full_name TEXT,
     avatar_url TEXT,
@@ -91,7 +91,7 @@ CREATE TABLE profiles (
 );
 
 -- TIER 2: FRIENDS + BLOCKS
-CREATE TABLE friendships (
+CREATE TABLE IF NOT EXISTS friendships (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     friend_id UUID REFERENCES users(id) ON DELETE CASCADE,
@@ -103,7 +103,7 @@ CREATE TABLE friendships (
 );
 
 -- TIER 3: POSTS
-CREATE TABLE posts (
+CREATE TABLE IF NOT EXISTS posts (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     content TEXT NOT NULL,
@@ -113,7 +113,7 @@ CREATE TABLE posts (
 );
 
 -- TIER 4: COMMENTS + LIKES
-CREATE TABLE comments (
+CREATE TABLE IF NOT EXISTS comments (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     post_id UUID REFERENCES posts(id) ON DELETE CASCADE,
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
@@ -122,7 +122,7 @@ CREATE TABLE comments (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE likes (
+CREATE TABLE IF NOT EXISTS likes (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     post_id UUID REFERENCES posts(id) ON DELETE CASCADE,
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
@@ -131,7 +131,7 @@ CREATE TABLE likes (
 );
 
 -- TIER 5: CHATS + MESSAGES
-CREATE TABLE chats (
+CREATE TABLE IF NOT EXISTS chats (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     is_group BOOLEAN DEFAULT FALSE,
     name TEXT,
@@ -139,14 +139,14 @@ CREATE TABLE chats (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE chat_participants (
+CREATE TABLE IF NOT EXISTS chat_participants (
     chat_id UUID REFERENCES chats(id) ON DELETE CASCADE,
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     joined_at TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (chat_id, user_id)
 );
 
-CREATE TABLE messages (
+CREATE TABLE IF NOT EXISTS messages (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     chat_id UUID REFERENCES chats(id) ON DELETE CASCADE,
     sender_id UUID REFERENCES users(id) ON DELETE CASCADE,
