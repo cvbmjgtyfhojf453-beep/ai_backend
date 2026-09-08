@@ -52,6 +52,10 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+def get_db():
+    return psycopg2.connect(DATABASE_URL, sslmode='require')
+
+
 def create_tables():
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
@@ -222,6 +226,7 @@ def register(
     hash = pwd.hash(password)
     user_id = str(uuid.uuid4())
     
+    conn = get_db()  # <-- Must use get_db() here
     try:
         with conn.cursor() as cur:
             cur.execute("INSERT INTO users (id,email,password_hash) VALUES (%s,%s,%s)", (user_id, email, hash))
@@ -230,6 +235,8 @@ def register(
     except:
         conn.rollback()
         raise HTTPException(409, "Email already exists")
+     finally:
+        conn.close()  # <-- Don't forget to close
 
 @app.post("/token")
 @limiter.limit("10/minute")
