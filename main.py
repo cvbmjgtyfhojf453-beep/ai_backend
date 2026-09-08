@@ -216,7 +216,8 @@ cloudinary.config(
 @limiter.limit("5/minute")
 def register(
     email: str = Body(...),
-    password: str = Body(...)
+    password: str = Body(...),
+    request: Request
 ):
     password = password[:72]  # Truncate for bcrypt
     hash = pwd.hash(password)
