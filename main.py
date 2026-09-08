@@ -219,8 +219,8 @@ def register(
     email: str = Body(...),
     password: str = Body(...)
 ):
-    password = password[:72]  # Truncate for bcrypt
-    hash = pwd.hash(password)
+    password_bytes = password.encode('utf-8')[:72]  # Truncate bytes, not chars
+    hash = pwd.hash(password_bytes.decode('utf-8'))
     user_id = str(uuid.uuid4())
     
     try:
