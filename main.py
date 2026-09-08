@@ -43,7 +43,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 oauth2 = OAuth2PasswordBearer(tokenUrl="token")
-pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 scheduler = BackgroundScheduler()
 
 # DB + VECTOR - Auto create tables
@@ -219,8 +219,7 @@ def register(
     email: str = Body(...),
     password: str = Body(...)
 ):
-    password_bytes = password.encode('utf-8')[:72]  # Force 72 bytes max
-    hash = pwd.hash(password_bytes)  # Hash bytes directly, no .decode()
+    hash = pwd.hash(password)
     user_id = str(uuid.uuid4())
     
     try:
