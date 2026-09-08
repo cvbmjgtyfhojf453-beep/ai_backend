@@ -235,7 +235,7 @@ def register(
     except:
         conn.rollback()
         raise HTTPException(409, "Email already exists")
-     finally:
+    finally:
         conn.close()  # <-- Don't forget to close
 
 @app.post("/token")
