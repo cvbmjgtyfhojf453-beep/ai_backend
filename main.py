@@ -255,14 +255,14 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
 
 @app.post("/token")
 @limiter.limit("10/minute")
-def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
+def login(request: Request, email: str = Body(...), password: str = Body(...)):
     conn = get_db()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (form_data.username,))
+            cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (email,))
             user = cur.fetchone()
         
-        if not user or not pwd.verify(form_data.password, user['password_hash']):
+        if not user or not pwd.verify(password, user['password_hash']):
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
         # Create JWT token
