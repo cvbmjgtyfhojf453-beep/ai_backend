@@ -42,6 +42,8 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkeychangeit")
+ALGORITHM = "HS256"
 oauth2 = OAuth2PasswordBearer(tokenUrl="token")
 pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 scheduler = BackgroundScheduler()
@@ -240,14 +242,26 @@ def register(
 
 @app.post("/token")
 @limiter.limit("10/minute")
-def login(request: Request, email: str, password: str):
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT id,password_hash FROM users WHERE email=%s", (email,))
-        user = cur.fetchone()
-    if not user or not pwd.verify(password, user['password_hash']):
-        raise HTTPException(401, "Invalid credentials")
-    token = jwt.encode({"sub": str(user['id']), "exp": datetime.utcnow() + timedelta(days=7)}, os.getenv("SECRET_KEY"), algorithm="HS256")
-    return {"access_token": token, "token_type": "bearer"}
+def login(request: Request, email: str = Body(...), password: str = Body(...)):
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (email,))
+            user = cur.fetchone()
+        
+        if not user or not pwd.verify(password, user['password_hash']):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        # Create JWT token
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": str(user['id'])}, expires_delta=access_token_expires
+        )
+        
+        return {"access_token": access_token, "token_type": "bearer"}
+        
+    finally:
+        conn.close()
 
 def get_user(token: str = Depends(oauth2)):
     try:
