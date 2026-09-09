@@ -33,6 +33,7 @@ import cloudinary
 import cloudinary.uploader
 from dotenv import load_dotenv
 from fastapi import Body
+from fastapi.security import OAuth2PasswordRequestForm # add this to imports at top
 
 load_dotenv()
 
@@ -251,17 +252,17 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-    
+
 @app.post("/token")
 @limiter.limit("10/minute")
-def login(request: Request, email: str = Body(...), password: str = Body(...)):
+def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     conn = get_db()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (email,))
+            cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (form_data.username,))
             user = cur.fetchone()
         
-        if not user or not pwd.verify(password, user['password_hash']):
+        if not user or not pwd.verify(form_data.password, user['password_hash']):
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
         # Create JWT token
