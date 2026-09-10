@@ -22,7 +22,7 @@ from pgvector.psycopg2 import register_vector
 from pypdf import PdfReader
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from docx import Document
-from jose import jwt
+from jose import jwt, JWTError
 from passlib.context import CryptContext #52 Auth
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler #22 Proactive
@@ -285,7 +285,7 @@ def get_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid token")
         return user_id
-    except jwt.PyJWTError:
+    except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # ====== MEMORY HELPERS ======
