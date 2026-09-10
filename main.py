@@ -46,7 +46,8 @@ client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkeychangeit")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 1 day
-oauth2 = OAuth2PasswordBearer(tokenUrl="token")
+# oauth2 = OAuth2PasswordBearer(tokenUrl="token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 scheduler = BackgroundScheduler()
 
