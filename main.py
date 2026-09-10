@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 import os, json, uuid
 from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, Depends, HTTPException, Request, BackgroundTasks
-from fastapi.security import OAuth2PasswordBearer
+# from fastapi.security import OAuth2PasswordBearer
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -33,7 +33,7 @@ import cloudinary
 import cloudinary.uploader
 from dotenv import load_dotenv
 from fastapi import Body
-from fastapi.security import OAuth2PasswordRequestForm # add this to imports at top
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 load_dotenv()
 
@@ -47,8 +47,8 @@ SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkeychangeit")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 1 day
 # oauth2 = OAuth2PasswordBearer(tokenUrl="token")
-oauth2 = OAuth2PasswordBearer(tokenUrl="/token")
 pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+security = HTTPBearer()  # instead of OAuth2PasswordBearer
 scheduler = BackgroundScheduler()
 
 # DB + VECTOR - Auto create tables
@@ -277,12 +277,16 @@ def login(request: Request, email: str = Body(...), password: str = Body(...)):
     finally:
         conn.close()
 
-def get_user(token: str = Depends(oauth2)):
+def get_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials  # this extracts the token
     try:
-        payload = jwt.decode(token, os.getenv("SECRET_KEY"), algorithms=["HS256"])
-        return payload["sub"]
-    except:
-        raise HTTPException(401, "Invalid token")
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return user_id
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 # ====== MEMORY HELPERS ======
 def embed_text(text: str):
