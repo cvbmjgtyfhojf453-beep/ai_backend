@@ -57,6 +57,12 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+
+class ChatRequest(BaseModel):
+    message: str
+    persona: str = "assistant"
+    roast_level: int = 0
+
 def get_db():
     return psycopg2.connect(DATABASE_URL, sslmode='require')
 
@@ -323,12 +329,18 @@ def health():
 
 @app.post("/chat")
 @limiter.limit("20/minute")
-async def chat(request: Request, message: str, persona: str="assistant", roast_level: int=0, user_id: str = Depends(get_user)):
-    context = "\n".join(search_memory(user_id, message))
-    system = f"You are {persona}. Roast level {roast_level}/10. Facts: {context}. Reply in user's language: Yoruba, Pidgin, English."
-    res = client.chat.completions.create(model="llama-3.1-8b", messages=[{"role":"system","content":system},{"role":"user","content":message}])
+async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_user)):
+    context = "\n".join(search_memory(user_id, req.message))
+    system = f"You are {req.persona}. Roast level {req.roast_level}/10. Facts: {context}. Reply in user's language: Yoruba, Pidgin, English."
+    res = client.chat.completions.create(
+        model="llama-3.1-8b", 
+        messages=[
+            {"role": "system", "content": system}, 
+            {"role": "user", "content": req.message}
+        ]
+    )
     reply = res.choices[0].message.content
-    save_memory(user_id, f"User: {message}\nAI: {reply}")
+    save_memory(user_id, f"User: {req.message}\nAI: {reply}")
     return {"reply": reply}
 
 @app.post("/upload")
