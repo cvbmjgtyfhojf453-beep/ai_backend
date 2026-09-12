@@ -290,7 +290,7 @@ def get_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
         user_id: str = payload.get("sub")
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid token")
-        return user_id
+        return int(user_id)
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
@@ -329,7 +329,7 @@ def health():
 
 @app.post("/chat")
 @limiter.limit("20/minute")
-async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_user)):
+async def chat(request: Request, req: ChatRequest, user_id: int = Depends(get_user)):
     context = "\n".join(search_memory(user_id, req.message))
     system = f"You are {req.persona}. Roast level {req.roast_level}/10. Facts: {context}. Reply in user's language: Yoruba, Pidgin, English."
     res = client.chat.completions.create(
