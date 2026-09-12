@@ -301,7 +301,7 @@ def get_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
 
 # ====== MEMORY HELPERS ======
 def embed_text(text: str):
-    return client.embeddings.create(model="text-embedding-3-small", input=text).data[0].embedding
+    return client.embeddings.create(model="llama3-8b-8192", input=text).data[0].embedding
 
 def save_memory(user_id, content, category="general", importance=0.5, emotion=None, privacy=False):
     emb = embed_text(content)
