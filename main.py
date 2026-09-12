@@ -301,7 +301,7 @@ def get_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
 
 # ====== MEMORY HELPERS ======
 def embed_text(text: str):
-    return client.embeddings.create(model="openai/gpt-oss-20b", input=text).data[0].embedding
+    return client.embeddings.create(model="nomic-embed-text-v1.5", input=text).data[0].embedding
 
 def save_memory(user_id, content, category="general", importance=0.5, emotion=None, privacy=False):
     emb = embed_text(content)
