@@ -285,13 +285,18 @@ def login(request: Request, email: str = Body(...), password: str = Body(...)):
 
 def get_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials  # this extracts the token
+    print("TOKEN RECEIVED:", token[:20])  # first 20 chars only
+    print("SECRET_KEY USED:", SECRET_KEY)
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        print("DECODED PAYLOAD:", payload)
         user_id: str = payload.get("sub")
         if user_id is None:
+            print("ERROR: No sub in payload")
             raise HTTPException(status_code=401, detail="Invalid token")
         return int(user_id)
     except JWTError:
+        print("JWT ERROR:", str(e))  # Signature verification failed / Expired
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # ====== MEMORY HELPERS ======
