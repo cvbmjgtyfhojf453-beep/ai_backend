@@ -301,7 +301,7 @@ def get_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
 
 # ====== MEMORY HELPERS ======
 def embed_text(text: str):
-    return client.embeddings.create(model="llama3-8b-8192", input=text).data[0].embedding
+    return client.embeddings.create(model="openai/gpt-oss-20b", input=text).data[0].embedding
 
 def save_memory(user_id, content, category="general", importance=0.5, emotion=None, privacy=False):
     emb = embed_text(content)
@@ -338,7 +338,7 @@ async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_us
     context = "\n".join(search_memory(user_id, req.message))
     system = f"You are {req.persona}. Roast level {req.roast_level}/10. Facts: {context}. Reply in user's language: Yoruba, Pidgin, English."
     res = client.chat.completions.create(
-        model="llama-3.1-8b", 
+        model="openai/gpt-oss-20b", 
         messages=[
             {"role": "system", "content": system}, 
             {"role": "user", "content": req.message}
