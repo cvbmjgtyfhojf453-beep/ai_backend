@@ -43,7 +43,7 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkeychangeit")
+SECRET_KEY = os.getenv("SECRET_KEY", "secretkeyokay")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 1 day
 # oauth2 = OAuth2PasswordBearer(tokenUrl="token")
