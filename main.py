@@ -295,7 +295,7 @@ def get_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
             print("ERROR: No sub in payload")
             raise HTTPException(status_code=401, detail="Invalid token")
         return int(user_id)
-    except JWTError:
+    except JWTError as e:
         print("JWT ERROR:", str(e))  # Signature verification failed / Expired
         raise HTTPException(status_code=401, detail="Invalid token")
 
