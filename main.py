@@ -347,7 +347,7 @@ def save_memory(user_id, content, category="general", importance=0.5, emotion=No
     register_vector(conn)
     with conn.cursor() as cur:
         cur.execute("INSERT INTO memories (id,user_id,content,embedding,category,importance,emotion,privacy_mode) VALUES (%s,%s,%s,%s::vector,%s,%s,%s,%s)",
-        (uuid.uuid4(), user_id, content, emb, category, importance, emotion, privacy));
+        (str(uuid.uuid4()), str(user_id), content, emb, category, importance, emotion, privacy));
         conn.commit()
     conn.close()    
     if not privacy: update_summary(user_id)
