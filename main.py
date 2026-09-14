@@ -58,6 +58,32 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
+
+def fix_embedding_dim():
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    try:
+        # Try to alter first
+        cur.execute("ALTER TABLE memories ALTER COLUMN embedding TYPE vector(1024);")
+        print("✅ Embedding dim updated to 1024")
+    except Exception as e:
+        print(f"⚠️ Alter failed: {e}")
+        print("Dropping and recreating table...")
+        cur.execute("DROP TABLE IF EXISTS memories;")
+        conn.commit()
+        # Now recreate table with correct dims
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS memories (id UUID PRIMARY KEY, user_id UUID, content TEXT, embedding vector(1024), category TEXT, importance FLOAT, emotion TEXT, privacy_mode BOOLEAN);
+        """)
+        print("✅ Table recreated with 1024 dims")
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Call it on startup
+fix_embedding_dim()
+
 class ChatRequest(BaseModel):
     message: str
     persona: str = "assistant"
@@ -300,8 +326,20 @@ def get_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # ====== MEMORY HELPERS ======
+
 def embed_text(text: str):
-    return client.embeddings.create(model="nomic-embed-text-v1.5", input=text).data[0].embedding
+    headers = {
+        "Authorization": f"Bearer {os.getenv('JINA_API_KEY')}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "jina-embeddings-v3",
+        "input": [text],
+        "task": "retrieval.passage" # important for memory/RAG
+    }
+    response = requests.post("https://api.jina.ai/v1/embeddings", headers=headers, json=data)
+    response.raise_for_status()
+    return response.json()['data'][0]['embedding']
 
 def save_memory(user_id, content, category="general", importance=0.5, emotion=None, privacy=False):
     emb = embed_text(content)
