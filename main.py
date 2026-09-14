@@ -364,7 +364,7 @@ def search_memory(user_id, query, limit=5):
 
 def update_summary(user_id):
     facts = search_memory(user_id, "facts goals likes", 20)
-    res = client.chat.completions.create(model="llama-3.1-8b", messages=[
+    res = client.chat.completions.create(model="openai/gpt-oss-20b", messages=[
         {"role":"system","content":"Summarize into JSON {likes:[],goals:[],facts:[]}"},
         {"role":"user","content":str(facts)}
     ]).choices[0].message.content
@@ -407,7 +407,7 @@ async def upload(file: UploadFile, user_id: str = Depends(get_user)):
 @app.post("/vision")
 async def vision(image: UploadFile, user_id: str = Depends(get_user)):
     upload_res = cloudinary.uploader.upload(image.file)
-    res = client.chat.completions.create(model="llama-3.2-11b-vision", messages=[{"role":"user","content":[{"type":"text","text":"Describe this image"},{"type":"image_url","image_url":{"url":upload_res['url']}}]}])
+    res = client.chat.completions.create(model="openai/gpt-oss-20b", messages=[{"role":"user","content":[{"type":"text","text":"Describe this image"},{"type":"image_url","image_url":{"url":upload_res['url']}}]}])
     save_memory(user_id, f"Image: {res.choices[0].message.content}", "vision")
     return {"description": res.choices[0].message.content}
 
