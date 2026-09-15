@@ -368,9 +368,12 @@ def update_summary(user_id):
         {"role":"system","content":"Summarize into JSON {likes:[],goals:[],facts:[]}"},
         {"role":"user","content":str(facts)}
     ]).choices[0].message.content
+    conn = psycopg2.connect(DATABASE_URL)
+    register_vector(conn)
     with conn.cursor() as cur:
         cur.execute("INSERT INTO memory_hive (user_id, summary) VALUES (%s,%s) ON CONFLICT (user_id) DO UPDATE SET summary=%s", (user_id, res, res));
         conn.commit()
+    conn.close()
 
 # ====== TIER 1-3: MEMORY + CHAT + MULTIMODAL ======
 @app.get("/health")
@@ -422,9 +425,11 @@ def tts(text: str):
 # ====== TIER 4-5: PRODUCTIVITY + AGENT ======
 @app.post("/task")
 def add_task(title: str, due_at: str, user_id: str = Depends(get_user)):
+    conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO tasks (id,user_id,title,due_at,done) VALUES (%s,%s,%s,%s,false)", (uuid.uuid4(), user_id, title, due_at));
-        conn.commit()
+        cur.execute("INSERT INTO tasks (id,user_id,title,due_at,done) VALUES (%s,%s,%s,%s,false)", (str(uuid.uuid4()), str(user_id), title, due_at));
+    conn.commit()
+    conn.close()
     return {"status":"task added"}
 
 @app.post("/calendar/create") #28
@@ -456,42 +461,61 @@ def web_search(query: str):
 # ====== TIER 6-7-8: SOCIAL + DEV + SAFETY ======
 @app.post("/contact")
 def add_contact(name: str, notes: str, user_id: str = Depends(get_user)):
+    conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO contacts (id,user_id,name,notes) VALUES (%s,%s,%s,%s)", (uuid.uuid4(), user_id, name, notes));
-        conn.commit()
+        cur.execute("INSERT INTO contacts (id,user_id,name,notes) VALUES (%s,%s,%s,%s)", (str(uuid.uuid4()), str(user_id), name, notes));
+    conn.commit()  
+    conn.close()
+    return {"status": "done"}
 
 @app.get("/analytics")
 def analytics(user_id: str = Depends(get_user)):
+    conn = psycopg2.connect(DATABASE_URL)
+    register_vector(conn)
     with conn.cursor() as cur:
-        cur.execute("SELECT category, COUNT(*) FROM memories WHERE user_id=%s GROUP BY category", (user_id,));
-        return {"topics": cur.fetchall()}
+        cur.execute("SELECT category, COUNT(*) FROM memories WHERE user_id=%s GROUP BY category", (str(user_id,)));
+        result = cur.fetchall()
+    conn.close()
+    return {"topics": result}
 
 @app.get("/export")
 def export(user_id: str = Depends(get_user)):
+    conn = psycopg2.connect(DATABASE_URL)
+    register_vector(conn)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT * FROM memories WHERE user_id=%s", (user_id,));
-        return {"data": cur.fetchall()}
+        cur.execute("SELECT * FROM memories WHERE user_id=%s", (str(user_id),));
+        data = cur.fetchall()
+    conn.close()
+    return {"data": data}
 
 @app.post("/webhook") #48
 def add_webhook(trigger: str, action: str, user_id: str = Depends(get_user)):
+    conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO webhooks (id,user_id,trigger,action) VALUES (%s,%s,%s,%s)", (uuid.uuid4(), user_id, trigger, action));
-        conn.commit()
+        cur.execute("INSERT INTO webhooks (id,user_id,trigger,action) VALUES (%s,%s,%s,%s)", (str(uuid.uuid4()), str(user_id), trigger, action));
+    conn.commit()
+    conn.close()
+    return {"status": "webhook saved"}
 
 @app.post("/backup") #54
 def backup():
     # pg_dump -> upload to cloudinary
+    conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO backups (id,created_at,url) VALUES (%s,%s,%s)", (uuid.uuid4(), datetime.now(), "backup_url"));
-        conn.commit()
+        cur.execute("INSERT INTO backups (id,created_at,url) VALUES (%s,%s,%s)", (str(uuid.uuid4()), datetime.now(), "backup_url"));
+    conn.commit()
+    conn.close()
     return {"status":"backed up"}
 
 # ====== TIER 4: PROACTIVE #22 ======
 def proactive_check():
+    conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
         cur.execute("SELECT user_id,title FROM tasks WHERE due_at < %s AND done=false", (datetime.now() + timedelta(hours=1),))
-        for user_id, title in cur.fetchall():
-            print(f"Remind {user_id}: {title} due soon") # send whatsapp here
+        rows = cur.fetchall()
+    conn.close()
+    for user_id, title in rows:
+        print(f"Remind {user_id}: {title} due soon") # send whatsapp here
 
 scheduler.add_job(proactive_check, 'interval', minutes=30)
 scheduler.start()
