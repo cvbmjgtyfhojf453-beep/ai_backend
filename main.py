@@ -382,7 +382,9 @@ def health():
 
 @app.post("/chat")
 @limiter.limit("20/minute")
-async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_user)):
+async def chat(request: Request, req: ChatRequest):
+    user_id = "public_user"
+# async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_user)):
     context = "\n".join(search_memory(user_id, req.message))
     system = f"You are {req.persona}. Roast level {req.roast_level}/10. Facts: {context}. Reply in user's language: Yoruba, Pidgin, English."
     res = client.chat.completions.create(
