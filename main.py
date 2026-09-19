@@ -394,7 +394,7 @@ async def chat(request: Request, req: ChatRequest):
         ]
     )
     reply = res.choices[0].message.content
-    save_memory(user_id, f"User: {req.message}\nAI: {reply}")
+    # save_memory(user_id, f"User: {req.message}\nAI: {reply}")
     return {"reply": reply}
 
 @app.post("/upload")
