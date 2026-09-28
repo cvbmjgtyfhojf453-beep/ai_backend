@@ -68,6 +68,7 @@ def fix_embedding_dim():
         print("✅ Embedding dim updated to 1024")
     except Exception as e:
         print(f"⚠️ Alter failed: {e}")
+        conn.rollback()
         print("Dropping and recreating table...")
         cur.execute("DROP TABLE IF EXISTS memories;")
         conn.commit()
