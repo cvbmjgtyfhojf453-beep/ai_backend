@@ -90,11 +90,11 @@ class ChatRequest(BaseModel):
     roast_level: int = 0
 
 def get_db():
-    return psycopg2.connect(DATABASE_URL, sslmode='require')
+    return psycopg2.connect(DATABASE_URL) # sslmode='require')
 
 
 def create_tables():
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    conn = psycopg2.connect(DATABASE_URL) # sslmode='require')
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     cur = conn.cursor()
     
