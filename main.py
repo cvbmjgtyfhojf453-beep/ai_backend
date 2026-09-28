@@ -72,6 +72,8 @@ def fix_embedding_dim():
         print("Dropping and recreating table...")
         cur.execute("DROP TABLE IF EXISTS memories;")
         conn.commit()
+        cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        conn.commit()
         # Now recreate table with correct dims
         cur.execute("""
             CREATE TABLE IF NOT EXISTS memories (id UUID PRIMARY KEY, user_id UUID, content TEXT, embedding vector(1024), category TEXT, importance FLOAT, emotion TEXT, privacy_mode BOOLEAN);
