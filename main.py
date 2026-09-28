@@ -330,7 +330,7 @@ def get_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
 
 # ====== MEMORY HELPERS ======
 
-def embed_text(text: str):
+def embed_text(text: str, task="retrieval.passage"):
     headers = {
         "Authorization": f"Bearer {os.getenv('JINA_API_KEY')}",
         "Content-Type": "application/json"
@@ -338,14 +338,14 @@ def embed_text(text: str):
     data = {
         "model": "jina-embeddings-v3",
         "input": [text],
-        "task": "retrieval.passage" # important for memory/RAG
+        "task": task # important for memory/RAG
     }
     response = requests.post("https://api.jina.ai/v1/embeddings", headers=headers, json=data)
     response.raise_for_status()
     return response.json()['data'][0]['embedding']
 
 def save_memory(user_id, content, category="general", importance=0.5, emotion=None, privacy=False):
-    emb = embed_text(content)
+    emb = embed_text(content, task="retrieval.passage"):
     conn = psycopg2.connect(DATABASE_URL)  # <-- ADD THIS
     register_vector(conn)
     with conn.cursor() as cur:
@@ -356,7 +356,7 @@ def save_memory(user_id, content, category="general", importance=0.5, emotion=No
     if not privacy: update_summary(user_id)
 
 def search_memory(user_id, query, limit=5):
-    emb = embed_text(query)
+    emb = embed_text(query, task="retrieval.query"):
     conn = psycopg2.connect(DATABASE_URL)
     register_vector(conn)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
