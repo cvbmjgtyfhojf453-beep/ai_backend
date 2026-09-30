@@ -522,12 +522,3 @@ def proactive_check():
 
 scheduler.add_job(proactive_check, 'interval', minutes=30)
 scheduler.start()
-
-
-@app.get("/test-memory")
-def test_memory():
-    try:
-        e = embed_text("test", task="retrieval.passage")
-        return {"ok": True, "dim": len(e), "has_jina_key": bool(os.getenv("JINA_API_KEY"))}
-    except Exception as ex:
-        return {"ok": False, "error": str(ex), "has_jina_key": bool(os.getenv("JINA_API_KEY"))}
