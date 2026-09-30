@@ -360,7 +360,7 @@ def search_memory(user_id, query, limit=5):
     conn = psycopg2.connect(DATABASE_URL)
     register_vector(conn)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT content FROM memories WHERE user_id=%s AND privacy_mode=false ORDER BY embedding <=> %s::vector LIMIT %s", (user_id, emb, limit));
+        cur.execute("SELECT content FROM memories WHERE user_id=%s AND (privacy_mode IS NULL OR privacy_mode=false) ORDER BY embedding <=> %s::vector LIMIT %s", (user_id, emb, limit));
         result = cur.fetchall()
     conn.close()
     return [r['content'] for r in result]
@@ -396,7 +396,7 @@ async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_us
         ]
     )
     reply = res.choices[0].message.content
-    # save_memory(user_id, f"User: {req.message}\nAI: {reply}")
+    save_memory(user_id, f"User: {req.message}\nAI: {reply}")
     return {"reply": reply}
 
 @app.post("/upload")
