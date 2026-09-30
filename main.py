@@ -374,7 +374,7 @@ def update_summary(user_id):
     conn = psycopg2.connect(DATABASE_URL)
     register_vector(conn)
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO memory_hive (user_id, summary) VALUES (%s,%s) ON CONFLICT (user_id) DO UPDATE SET summary=%s", (user_id, res, res));
+        cur.execute("INSERT INTO memory_hive (user_id, summary) VALUES (%s,%s::jsonb) ON CONFLICT (user_id) DO UPDATE SET summary=%s::jsonb", (user_id, json.dumps(res), json.dumps(res)));
         conn.commit()
     conn.close()
 
