@@ -10,7 +10,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy.orm import sessionmaker
 import os, json, uuid
 from datetime import datetime, timedelta
-from fastapi import FastAPI, UploadFile, Depends, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, UploadFile, Depends, HTTPException, Request, BackgroundTasks, File
 # from fastapi.security import OAuth2PasswordBearer
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
