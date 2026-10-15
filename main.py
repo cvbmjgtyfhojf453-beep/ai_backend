@@ -34,6 +34,8 @@ import cloudinary.uploader
 from dotenv import load_dotenv
 from fastapi import Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import StreamingResponse
+import io
 
 load_dotenv()
 
@@ -68,8 +70,11 @@ def fix_embedding_dim():
         print("✅ Embedding dim updated to 1024")
     except Exception as e:
         print(f"⚠️ Alter failed: {e}")
+        conn.rollback()
         print("Dropping and recreating table...")
         cur.execute("DROP TABLE IF EXISTS memories;")
+        conn.commit()
+        cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
         conn.commit()
         # Now recreate table with correct dims
         cur.execute("""
@@ -90,11 +95,11 @@ class ChatRequest(BaseModel):
     roast_level: int = 0
 
 def get_db():
-    return psycopg2.connect(DATABASE_URL, sslmode='require')
+    return psycopg2.connect(DATABASE_URL) # sslmode='require')
 
 
 def create_tables():
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    conn = psycopg2.connect(DATABASE_URL) # sslmode='require')
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     cur = conn.cursor()
     
@@ -327,7 +332,7 @@ def get_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
 
 # ====== MEMORY HELPERS ======
 
-def embed_text(text: str):
+def embed_text(text: str, task="retrieval.passage"):
     headers = {
         "Authorization": f"Bearer {os.getenv('JINA_API_KEY')}",
         "Content-Type": "application/json"
@@ -335,14 +340,14 @@ def embed_text(text: str):
     data = {
         "model": "jina-embeddings-v3",
         "input": [text],
-        "task": "retrieval.passage" # important for memory/RAG
+        "task": task # important for memory/RAG
     }
     response = requests.post("https://api.jina.ai/v1/embeddings", headers=headers, json=data)
     response.raise_for_status()
     return response.json()['data'][0]['embedding']
 
 def save_memory(user_id, content, category="general", importance=0.5, emotion=None, privacy=False):
-    emb = embed_text(content)
+    emb = embed_text(content, task="retrieval.passage")
     conn = psycopg2.connect(DATABASE_URL)  # <-- ADD THIS
     register_vector(conn)
     with conn.cursor() as cur:
@@ -353,11 +358,11 @@ def save_memory(user_id, content, category="general", importance=0.5, emotion=No
     if not privacy: update_summary(user_id)
 
 def search_memory(user_id, query, limit=5):
-    emb = embed_text(query)
+    emb = embed_text(query, task="retrieval.query")
     conn = psycopg2.connect(DATABASE_URL)
     register_vector(conn)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT content FROM memories WHERE user_id=%s AND privacy_mode=false ORDER BY embedding <=> %s::vector LIMIT %s", (user_id, emb, limit));
+        cur.execute("SELECT content FROM memories WHERE user_id=%s AND (privacy_mode IS NULL OR privacy_mode=false) ORDER BY embedding <=> %s::vector LIMIT %s", (user_id, emb, limit));
         result = cur.fetchall()
     conn.close()
     return [r['content'] for r in result]
@@ -368,9 +373,12 @@ def update_summary(user_id):
         {"role":"system","content":"Summarize into JSON {likes:[],goals:[],facts:[]}"},
         {"role":"user","content":str(facts)}
     ]).choices[0].message.content
+    conn = psycopg2.connect(DATABASE_URL)
+    register_vector(conn)
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO memory_hive (user_id, summary) VALUES (%s,%s) ON CONFLICT (user_id) DO UPDATE SET summary=%s", (user_id, res, res));
+        cur.execute("INSERT INTO memory_hive (user_id, summary) VALUES (%s,%s::jsonb) ON CONFLICT (user_id) DO UPDATE SET summary=%s::jsonb", (user_id, json.dumps(res), json.dumps(res)));
         conn.commit()
+    conn.close()
 
 # ====== TIER 1-3: MEMORY + CHAT + MULTIMODAL ======
 @app.get("/health")
@@ -381,7 +389,7 @@ def health():
 @limiter.limit("20/minute")
 async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_user)):
     context = "\n".join(search_memory(user_id, req.message))
-    system = f"You are {req.persona}. Roast level {req.roast_level}/10. Facts: {context}. Reply in user's language: Yoruba, Pidgin, English."
+    system = f"You are {req.persona}. Roast level {req.roast_level}/10. Facts: {context}. Reply in user's language, your name is OBANOR."
     res = client.chat.completions.create(
         model="openai/gpt-oss-20b", 
         messages=[
@@ -396,35 +404,91 @@ async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_us
 @app.post("/upload")
 async def upload(file: UploadFile, user_id: str = Depends(get_user)):
     text = ""
-    if file.filename.endswith(".pdf"):
-        text = "".join([p.extract_text() for p in PdfReader(file.file).pages])
-    elif file.filename.endswith(".docx"):
-        text = "\n".join([p.text for p in Document(file.file).paragraphs])
-    for chunk in [text[i:i+500] for i in range(0, len(text), 500)]:
+    try:
+        if file.filename.lower().endswith(".pdf"):
+            text = "".join([p.extract_text() or "" for p in PdfReader(file.file).pages])
+        elif file.filename.lower().endswith(".docx"):
+            text = "\n".join([p.text for p in Document(file.file).paragraphs])
+        else: # txt, csv, etc
+            text = (await file.read()).decode("utf-8", errors="ignore")
+            file.file.seek(0)
+    except Exception as e:
+        return {"reply": f"Could not read file: {e}"}
+
+    if not text.strip():
+        return {"reply": "File is empty or could not extract text."}
+
+    for chunk in [text[i:i+1000] for i in range(0, len(text), 1000)]:
         save_memory(user_id, chunk, "document", 0.8)
-    return {"status":"indexed"}
+
+    # Now make Groq answer about the file
+    res = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role":"user","content": f"User uploaded file {file.filename}. Content:\n{text[:12000]}\n\nSummarize and answer."}]
+    )
+    return {"reply": res.choices[0].message.content, "status": "indexed"}
 
 @app.post("/vision")
 async def vision(image: UploadFile, user_id: str = Depends(get_user)):
+    # upload to cloudinary to get URL
     upload_res = cloudinary.uploader.upload(image.file)
-    res = client.chat.completions.create(model="openai/gpt-oss-20b", messages=[{"role":"user","content":[{"type":"text","text":"Describe this image"},{"type":"image_url","image_url":{"url":upload_res['url']}}]}])
-    save_memory(user_id, f"Image: {res.choices[0].message.content}", "vision")
-    return {"description": res.choices[0].message.content}
+    image_url = upload_res['secure_url']
+
+    # Use REAL vision model
+    res = client.chat.completions.create(
+        model="llama-3.2-11b-vision-preview",
+        messages=[{
+            "role":"user",
+            "content": [
+                {"type":"text","text":"Describe this image in detail and answer what the user might want to know."},
+                {"type":"image_url","image_url":{"url": image_url}}
+            ]
+        }]
+    )
+    description = res.choices[0].message.content
+    save_memory(user_id, f"Image: {description}", "vision")
+    return {"reply": description, "description": description, "image_url": image_url}
 
 @app.post("/voice-to-text")
-async def stt(audio: UploadFile):
-    return {"text": client.audio.transcriptions.create(file=(audio.filename, audio.file.read()), model="whisper-large-v3").text}
+async def stt(audio: UploadFile = File(...), file: UploadFile = File(None)):
+    # Accept both 'audio' and 'file' field names from Android
+    actual_file = file or audio
+    try:
+        transcription = client.audio.transcriptions.create(
+            file=(actual_file.filename, await actual_file.read()),
+            model="whisper-large-v3"
+        )
+        return {"text": transcription.text, "reply": transcription.text}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(500, f"Transcription failed: {e}")
 
 @app.post("/tts")
-def tts(text: str):
-    return {"audio": client.audio.speech.create(model="playai-tts", voice="Fritz-PlayAI", input=text).content}
+def tts(text: str = Body(..., embed=True)):
+    try:
+        speech = client.audio.speech.create(
+            model="playai-tts",
+            voice="Fritz-PlayAI",
+            input=text,
+            response_format="wav"
+        )
+        # Return audio file directly so app can play it
+        return StreamingResponse(
+            io.BytesIO(speech.read() if hasattr(speech, 'read') else speech),
+            media_type="audio/wav"
+        )
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 # ====== TIER 4-5: PRODUCTIVITY + AGENT ======
 @app.post("/task")
 def add_task(title: str, due_at: str, user_id: str = Depends(get_user)):
+    conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO tasks (id,user_id,title,due_at,done) VALUES (%s,%s,%s,%s,false)", (uuid.uuid4(), user_id, title, due_at));
-        conn.commit()
+        cur.execute("INSERT INTO tasks (id,user_id,title,due_at,done) VALUES (%s,%s,%s,%s,false)", (str(uuid.uuid4()), str(user_id), title, due_at));
+    conn.commit()
+    conn.close()
     return {"status":"task added"}
 
 @app.post("/calendar/create") #28
@@ -456,42 +520,61 @@ def web_search(query: str):
 # ====== TIER 6-7-8: SOCIAL + DEV + SAFETY ======
 @app.post("/contact")
 def add_contact(name: str, notes: str, user_id: str = Depends(get_user)):
+    conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO contacts (id,user_id,name,notes) VALUES (%s,%s,%s,%s)", (uuid.uuid4(), user_id, name, notes));
-        conn.commit()
+        cur.execute("INSERT INTO contacts (id,user_id,name,notes) VALUES (%s,%s,%s,%s)", (str(uuid.uuid4()), str(user_id), name, notes));
+    conn.commit()  
+    conn.close()
+    return {"status": "done"}
 
 @app.get("/analytics")
 def analytics(user_id: str = Depends(get_user)):
+    conn = psycopg2.connect(DATABASE_URL)
+    register_vector(conn)
     with conn.cursor() as cur:
-        cur.execute("SELECT category, COUNT(*) FROM memories WHERE user_id=%s GROUP BY category", (user_id,));
-        return {"topics": cur.fetchall()}
+        cur.execute("SELECT category, COUNT(*) FROM memories WHERE user_id=%s GROUP BY category", (str(user_id,)));
+        result = cur.fetchall()
+    conn.close()
+    return {"topics": result}
 
 @app.get("/export")
 def export(user_id: str = Depends(get_user)):
+    conn = psycopg2.connect(DATABASE_URL)
+    register_vector(conn)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT * FROM memories WHERE user_id=%s", (user_id,));
-        return {"data": cur.fetchall()}
+        cur.execute("SELECT * FROM memories WHERE user_id=%s", (str(user_id),));
+        data = cur.fetchall()
+    conn.close()
+    return {"data": data}
 
 @app.post("/webhook") #48
 def add_webhook(trigger: str, action: str, user_id: str = Depends(get_user)):
+    conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO webhooks (id,user_id,trigger,action) VALUES (%s,%s,%s,%s)", (uuid.uuid4(), user_id, trigger, action));
-        conn.commit()
+        cur.execute("INSERT INTO webhooks (id,user_id,trigger,action) VALUES (%s,%s,%s,%s)", (str(uuid.uuid4()), str(user_id), trigger, action));
+    conn.commit()
+    conn.close()
+    return {"status": "webhook saved"}
 
 @app.post("/backup") #54
 def backup():
     # pg_dump -> upload to cloudinary
+    conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO backups (id,created_at,url) VALUES (%s,%s,%s)", (uuid.uuid4(), datetime.now(), "backup_url"));
-        conn.commit()
+        cur.execute("INSERT INTO backups (id,created_at,url) VALUES (%s,%s,%s)", (str(uuid.uuid4()), datetime.now(), "backup_url"));
+    conn.commit()
+    conn.close()
     return {"status":"backed up"}
 
 # ====== TIER 4: PROACTIVE #22 ======
 def proactive_check():
+    conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
         cur.execute("SELECT user_id,title FROM tasks WHERE due_at < %s AND done=false", (datetime.now() + timedelta(hours=1),))
-        for user_id, title in cur.fetchall():
-            print(f"Remind {user_id}: {title} due soon") # send whatsapp here
+        rows = cur.fetchall()
+    conn.close()
+    for user_id, title in rows:
+        print(f"Remind {user_id}: {title} due soon") # send whatsapp here
 
 scheduler.add_job(proactive_check, 'interval', minutes=30)
 scheduler.start()
