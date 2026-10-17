@@ -347,15 +347,29 @@ def embed_text(text: str, task="retrieval.passage"):
     return response.json()['data'][0]['embedding']
 
 def save_memory(user_id, content, category="general", importance=0.5, emotion=None, privacy=False):
-    emb = embed_text(content, task="retrieval.passage")
-    conn = psycopg2.connect(DATABASE_URL)  # <-- ADD THIS
-    register_vector(conn)
-    with conn.cursor() as cur:
-        cur.execute("INSERT INTO memories (id,user_id,content,embedding,category,importance,emotion,privacy_mode) VALUES (%s,%s,%s,%s::vector,%s,%s,%s,%s)",
-        (str(uuid.uuid4()), str(user_id), content, emb, category, importance, emotion, privacy));
-        conn.commit()
-    conn.close()    
-    if not privacy: update_summary(user_id)
+    try:
+        # FIX: Remove NUL bytes that crash Postgres
+        content = str(content).replace("\x00", "").replace("\0", "")
+        content = "".join(c for c in content if c.isprintable() or c in "\n\r\t ").strip()
+        if len(content) < 5:
+            return
+
+        emb = embed_text(content, task="retrieval.passage")
+        conn = psycopg2.connect(DATABASE_URL)
+        register_vector(conn)
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO memories (id,user_id,content,embedding,category,importance,emotion,privacy_mode) VALUES (%s,%s,%s,%s::vector,%s,%s,%s,%s)",
+            (str(uuid.uuid4()), str(user_id), content, emb, category, importance, emotion, privacy))
+            conn.commit()
+        conn.close()
+        if not privacy:
+            try:
+                update_summary(user_id)
+            except Exception as e:
+                print(f"update_summary skipped: {e}")
+    except Exception as e:
+        print(f"save_memory skipped: {e}")
+        return
 
 def search_memory(user_id, query, limit=5):
     emb = embed_text(query, task="retrieval.query")
@@ -409,19 +423,28 @@ async def upload(file: UploadFile, user_id: str = Depends(get_user)):
             text = "".join([p.extract_text() or "" for p in PdfReader(file.file).pages])
         elif file.filename.lower().endswith(".docx"):
             text = "\n".join([p.text for p in Document(file.file).paragraphs])
-        else: # txt, csv, etc
+        else:
             text = (await file.read()).decode("utf-8", errors="ignore")
-            file.file.seek(0)
     except Exception as e:
         return {"reply": f"Could not read file: {e}"}
+
+    # FIX: Remove NUL bytes that crash Postgres
+    text = text.replace("\x00", "").replace("\0", "")
+    text = "".join(c for c in text if c.isprintable() or c in "\n\r\t ")
 
     if not text.strip():
         return {"reply": "File is empty or could not extract text."}
 
     for chunk in [text[i:i+1000] for i in range(0, len(text), 1000)]:
-        save_memory(user_id, chunk, "document", 0.8)
+        chunk = chunk.replace("\x00", "").strip()
+        if not chunk:
+            continue
+        try:
+            save_memory(user_id, chunk, "document", 0.8)
+        except Exception as e:
+            print(f"Memory save skipped: {e}")
+            continue
 
-    # Now make Groq answer about the file
     res = client.chat.completions.create(
         model="openai/gpt-oss-20b",
         messages=[{"role":"user","content": f"User uploaded file {file.filename}. Content:\n{text[:12000]}\n\nSummarize and answer."}]
