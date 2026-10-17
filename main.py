@@ -436,7 +436,7 @@ async def vision(image: UploadFile, user_id: str = Depends(get_user)):
 
     # Use REAL vision model
     res = client.chat.completions.create(
-        model="openai/gpt-oss-120b",
+        model="qwen/qwen3.8-27b",
         messages=[{
             "role":"user",
             "content": [
