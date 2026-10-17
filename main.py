@@ -423,7 +423,7 @@ async def upload(file: UploadFile, user_id: str = Depends(get_user)):
 
     # Now make Groq answer about the file
     res = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-20b",
         messages=[{"role":"user","content": f"User uploaded file {file.filename}. Content:\n{text[:12000]}\n\nSummarize and answer."}]
     )
     return {"reply": res.choices[0].message.content, "status": "indexed"}
@@ -436,7 +436,7 @@ async def vision(image: UploadFile, user_id: str = Depends(get_user)):
 
     # Use REAL vision model
     res = client.chat.completions.create(
-        model="llama-3.2-11b-vision-preview",
+        model="openai/gpt-oss-120b",
         messages=[{
             "role":"user",
             "content": [
@@ -456,7 +456,7 @@ async def stt(audio: UploadFile = File(...), file: UploadFile = File(None)):
     try:
         transcription = client.audio.transcriptions.create(
             file=(actual_file.filename, await actual_file.read()),
-            model="whisper-large-v3"
+            model="whisper-large-v3-turbo"
         )
         return {"text": transcription.text, "reply": transcription.text}
     except Exception as e:
@@ -467,7 +467,7 @@ async def stt(audio: UploadFile = File(...), file: UploadFile = File(None)):
 def tts(text: str = Body(..., embed=True)):
     try:
         speech = client.audio.speech.create(
-            model="playai-tts",
+            model="canopylabs/orpheus-v1-english",
             voice="Fritz-PlayAI",
             input=text,
             response_format="wav"
