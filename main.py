@@ -568,7 +568,7 @@ async def upload(file: UploadFile, user_id: str = Depends(get_user)):
 
 @app.post("/summarize_full")
 @limiter.limit("10/minute")
-async def summarize_full(file: UploadFile, user_id: str = Depends(get_user)):
+async def summarize_full(request: Request, file: UploadFile, user_id: str = Depends(get_user)):
     """EXPENSIVE - Burns 5k-15k tokens. Use only when user clicks 'Full Summary'"""
     text = ""
     try:
