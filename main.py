@@ -47,7 +47,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 SECRET_KEY = os.getenv("SECRET_KEY", "secretkeyokay")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 5 # 1 day
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30 # 30 day
 # oauth2 = OAuth2PasswordBearer(tokenUrl="token")
 pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 security = HTTPBearer()  # instead of OAuth2PasswordBearer
@@ -328,7 +328,7 @@ def get_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
         return user_id
     except JWTError as e:
         print("JWT ERROR:", str(e))  # Signature verification failed / Expired
-        raise HTTPException(status_code=401, detail="Invalid token please login again")
+        raise HTTPException(status_code=401, detail="Invalid token, please login again")
 
 # ====== MEMORY HELPERS ======
 
@@ -382,17 +382,53 @@ def search_memory(user_id, query, limit=5):
     return [r['content'] for r in result]
 
 def update_summary(user_id):
-    facts = search_memory(user_id, "facts goals likes", 20)
-    res = client.chat.completions.create(model="openai/gpt-oss-20b", messages=[
-        {"role":"system","content":"Summarize into JSON {likes:[],goals:[],facts:[]}"},
-        {"role":"user","content":str(facts)}
-    ]).choices[0].message.content
-    conn = psycopg2.connect(DATABASE_URL)
-    register_vector(conn)
-    with conn.cursor() as cur:
-        cur.execute("INSERT INTO memory_hive (user_id, summary) VALUES (%s,%s::jsonb) ON CONFLICT (user_id) DO UPDATE SET summary=%s::jsonb", (user_id, json.dumps(res), json.dumps(res)));
-        conn.commit()
-    conn.close()
+    try:
+        facts = search_memory(user_id, "facts goals likes", 15)
+        if not facts:
+            return
+
+        # FIX: Trim to stay under Groq 8000 TPM limit
+        combined = ""
+        for f in facts:
+            txt = str(f).replace("\x00", "")[:400]  # max 400 chars per fact
+            if len(combined) + len(txt) > 3000:  # max 3000 chars total
+                break
+            combined += txt + "\n"
+
+        if len(combined) < 20:
+            return
+
+        res = client.chat.completions.create(
+            model="openai/gpt-oss-20b",
+            messages=[
+                {"role": "system", "content": "Summarize into JSON {likes:[],goals:[],facts:[]}. Keep it under 200 words."},
+                {"role": "user", "content": combined[:3000]}
+            ],
+            max_tokens=300
+        ).choices[0].message.content
+
+        # Clean NUL bytes
+        res_clean = res.replace("\x00", "").strip()
+        
+        # Ensure it's valid JSON, if not, wrap it
+        try:
+            json_obj = json.loads(res_clean)
+        except:
+            # If model returned text not JSON, make it a fact
+            json_obj = {"likes": [], "goals": [], "facts": [res_clean[:500]]}
+
+        conn = psycopg2.connect(DATABASE_URL)
+        register_vector(conn)
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO memory_hive (user_id, summary) VALUES (%s,%s::jsonb) ON CONFLICT (user_id) DO UPDATE SET summary=%s::jsonb", 
+                        (str(user_id), json.dumps(json_obj), json.dumps(json_obj)))
+            conn.commit()
+        conn.close()
+        print("Summary updated")
+        
+    except Exception as e:
+        print(f"update_summary skipped: {e}")
+        return
 
 # ====== TIER 1-3: MEMORY + CHAT + MULTIMODAL ======
 @app.get("/health")
