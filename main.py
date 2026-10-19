@@ -438,18 +438,57 @@ def health():
 @app.post("/chat")
 @limiter.limit("20/minute")
 async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_user)):
-    context = "\n".join(search_memory(user_id, req.message))
-    system = f"You are {req.persona}. Roast level {req.roast_level}/10. Facts: {context}. Reply in user's language, your name is OBANOR."
-    res = client.chat.completions.create(
-        model="openai/gpt-oss-20b", 
-        messages=[
-            {"role": "system", "content": system}, 
-            {"role": "user", "content": req.message}
-        ]
-    )
-    reply = res.choices[0].message.content
-    save_memory(user_id, f"User: {req.message}\nAI: {reply}")
-    return {"reply": reply}
+    try:
+        # FIX: Limit memories to 8 and trim length
+        raw_mems = search_memory(user_id, req.message, 8)  # limit to 8
+        context_parts = []
+        total_len = 0
+        for m in raw_mems:
+            txt = str(m).replace("\x00","")[:300]  # 300 chars max each
+            if total_len + len(txt) > 1500:  # max 1500 chars total context
+                break
+            context_parts.append(txt)
+            total_len += len(txt)
+        
+        context = "\n".join(context_parts)[:1500]
+
+        # FIX: Trim user message
+        user_msg = req.message.replace("\x00","")[:1500]
+
+        system = f"You are {req.persona}. Roast level {req.roast_level}/10. Facts: {context}. Reply in user's language, your name is OBANOR."
+
+        res = client.chat.completions.create(
+            model="openai/gpt-oss-20b", 
+            messages=[
+                {"role": "system", "content": system[:2000]},  # system max 2000
+                {"role": "user", "content": user_msg}
+            ],
+            max_tokens=500
+        )
+        reply = res.choices[0].message.content
+        
+        try:
+            save_memory(user_id, f"User: {user_msg[:300]}\nAI: {reply[:300]}")
+        except Exception as e:
+            print(f"save_memory in chat skipped: {e}")
+
+        return {"reply": reply}
+        
+    except Exception as e:
+        if "413" in str(e):
+            print("413 hit, retrying without context")
+            # Emergency retry with NO memory
+            res = client.chat.completions.create(
+                model="openai/gpt-oss-20b",
+                messages=[
+                    {"role": "system", "content": f"You are {req.persona}. Roast level {req.roast_level}/10. Your name is OBANOR."},
+                    {"role": "user", "content": req.message[:800]}
+                ],
+                max_tokens=300
+            )
+            return {"reply": res.choices[0].message.content}
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload")
 async def upload(file: UploadFile, user_id: str = Depends(get_user)):
