@@ -47,7 +47,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 SECRET_KEY = os.getenv("SECRET_KEY", "secretkeyokay")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 1 day
+ACCESS_TOKEN_EXPIRE_MINUTES = 5 # 1 day
 # oauth2 = OAuth2PasswordBearer(tokenUrl="token")
 pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 security = HTTPBearer()  # instead of OAuth2PasswordBearer
@@ -328,7 +328,7 @@ def get_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
         return user_id
     except JWTError as e:
         print("JWT ERROR:", str(e))  # Signature verification failed / Expired
-        raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(status_code=401, detail="Invalid token please login again")
 
 # ====== MEMORY HELPERS ======
 
