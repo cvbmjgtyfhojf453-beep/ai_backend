@@ -61,6 +61,31 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 
+def groq_chat(messages, max_tokens=300):
+    """
+    Fallback for Oct 2026: Only gpt-oss-20b and gpt-oss-120b are active on free/dev tier.
+    Llama models are Enterprise-only now -> will 404.
+    """
+    for model in ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]:
+        try:
+            return client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens
+            )
+        except Exception as e:
+            err = str(e).lower()
+            # If rate limit, too large, or model not accessible, try next
+            if any(x in err for x in ["429", "413", "rate_limit", "too large", "decommissioned", "404", "access"]):
+                print(f"{model} failed ({str(e)[:120]}), trying next...")
+                continue
+            raise e
+    
+    # If both fail, wait message
+    raise Exception("Both gpt-oss models hit daily limit. Try again in 1h or upgrade to Dev Tier at console.groq.com/settings/billing")
+
+
+
 def fix_embedding_dim():
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
@@ -398,8 +423,7 @@ def update_summary(user_id):
         if len(combined) < 20:
             return
 
-        res = client.chat.completions.create(
-            model="openai/gpt-oss-20b",
+        res = groq_chat(
             messages=[
                 {"role": "system", "content": "Summarize into JSON {likes:[],goals:[],facts:[]}. Keep it under 200 words."},
                 {"role": "user", "content": combined[:3000]}
@@ -457,8 +481,7 @@ async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_us
 
         system = f"You are {req.persona}. Roast level {req.roast_level}/10. Facts: {context}. Reply in user's language, your name is OBANOR."
 
-        res = client.chat.completions.create(
-            model="openai/gpt-oss-20b", 
+        res = groq_chat(
             messages=[
                 {"role": "system", "content": system[:2000]},  # system max 2000
                 {"role": "user", "content": user_msg}
@@ -475,18 +498,21 @@ async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_us
         return {"reply": reply}
         
     except Exception as e:
-        if "413" in str(e):
-            print("413 hit, retrying without context")
-            # Emergency retry with NO memory
-            res = client.chat.completions.create(
-                model="openai/gpt-oss-20b",
-                messages=[
-                    {"role": "system", "content": f"You are {req.persona}. Roast level {req.roast_level}/10. Your name is OBANOR."},
-                    {"role": "user", "content": req.message[:800]}
-                ],
-                max_tokens=300
-            )
-            return {"reply": res.choices[0].message.content}
+        if "413" in str(e) or "429" in str(e):
+            print("413/429 hit, retrying without context via fallback")
+            # Emergency retry with NO memory - using fallback
+            try:
+                res = groq_chat(
+                    messages=[
+                        {"role": "system", "content": f"You are {req.persona}. Roast level {req.roast_level}/10. Your name is OBANOR."},
+                        {"role": "user", "content": req.message[:800]}
+                    ],
+                    max_tokens=300
+                )
+                return {"reply": res.choices[0].message.content}
+            except Exception as inner_e:
+                traceback.print_exc()
+                raise HTTPException(status_code=500, detail=str(inner_e))
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -510,21 +536,68 @@ async def upload(file: UploadFile, user_id: str = Depends(get_user)):
     if not text.strip():
         return {"reply": "File is empty or could not extract text."}
 
-    for chunk in [text[i:i+1000] for i in range(0, len(text), 1000)]:
+    # FIX: Save FULL file to DB in small 500-char chunks - costs 0 Groq tokens
+    # Before you did 1000-char chunks, now 450 to match search limit
+    chunks = [text[i:i+450] for i in range(0, len(text), 450)]
+    for idx, chunk in enumerate(chunks[:200]):  # max 200 chunks = ~100 pages
         chunk = chunk.replace("\x00", "").strip()
         if not chunk:
             continue
         try:
-            save_memory(user_id, chunk, "document", 0.8)
+            # Keep same signature you had: save_memory(user_id, chunk, "document", 0.8)
+            save_memory(user_id, f"File:{file.filename} [{idx+1}/{len(chunks[:200])}] {chunk}", "document", 0.8)
         except Exception as e:
             print(f"Memory save skipped: {e}")
             continue
 
-    res = client.chat.completions.create(
-        model="openai/gpt-oss-20b",
-        messages=[{"role":"user","content": f"User uploaded file {file.filename}. Content:\n{text[:12000]}\n\nSummarize and answer."}]
-    )
-    return {"reply": res.choices[0].message.content, "status": "indexed"}
+    # FIX: Cheap summary - only first 2000 chars to Groq, not 12000
+    try:
+        res = groq_chat(
+            messages=[
+                {"role": "system", "content": "Summarize file in 3 short bullets, max 80 words."},
+                {"role": "user", "content": f"User uploaded {file.filename}. Content:\n{text[:2000]}"}
+            ],
+            max_tokens=120
+        )
+        reply = res.choices[0].message.content
+    except Exception as e:
+        print(f"groq_chat summary failed, fallback: {e}")
+        reply = f"File {file.filename} saved: {len(chunks[:200])} chunks indexed. Ask me anything about it."
+
+    return {"reply": reply, "status": "indexed", "chunks": len(chunks[:200])}
+
+@app.post("/summarize_full")
+@limiter.limit("10/minute")
+async def summarize_full(file: UploadFile, user_id: str = Depends(get_user)):
+    """EXPENSIVE - Burns 5k-15k tokens. Use only when user clicks 'Full Summary'"""
+    text = ""
+    try:
+        if file.filename.lower().endswith(".pdf"):
+            text = "".join([p.extract_text() or "" for p in PdfReader(file.file).pages])
+        elif file.filename.lower().endswith(".docx"):
+            text = "\n".join([p.text for p in Document(file.file).paragraphs])
+        else:
+            text = (await file.read()).decode("utf-8", errors="ignore")
+    except Exception as e:
+        return {"reply": f"Could not read file: {e}"}
+
+    text = text.replace("\x00", "")[:20000]  # cap at 20k chars
+    if not text.strip():
+        return {"reply": "File empty"}
+
+    try:
+        res = groq_chat(
+            messages=[
+                {"role": "system", "content": "You are OBANOR. Summarize entire document with key facts, dates, names."},
+                {"role": "user", "content": f"Summarize full document {file.filename}:\n\n{text}"}
+            ],
+            max_tokens=500
+        )
+        return {"reply": res.choices[0].message.content}
+    except Exception as e:
+        if "429" in str(e):
+            return {"reply": "Daily limit hit (200k). Your file is already saved via /upload and searchable. Try full summary tomorrow or upgrade."}
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/vision")
 async def vision(image: UploadFile, user_id: str = Depends(get_user)):
