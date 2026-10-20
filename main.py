@@ -36,6 +36,8 @@ from fastapi import Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import StreamingResponse
 import io
+import time
+from collections import defaultdict
 
 load_dotenv()
 
@@ -530,8 +532,27 @@ async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_us
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+user_last_upload = defaultdict(float)
+
+def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx: int):
+    for idx in range(start_idx, len(chunks)):
+        try:
+            clean = chunks[idx].replace("\x00", "").strip()
+            if clean:
+                save_memory(user_id, f"File:{filename} [{idx+1}/{len(chunks)}] {clean}", "document", 0.8)
+        except Exception as e:
+            print(f"Chunk {idx} skip: {e}")
+            continue
+
 @app.post("/upload")
-async def upload(file: UploadFile, user_id: str = Depends(get_user)):
+async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
+    now = time.time()
+    if now - user_last_upload[user_id] < 10:
+        return {"reply": "Please wait 10s between uploads", "status": "rate_limited"}
+    user_last_upload[user_id] = now
+
     text = ""
     try:
         if file.filename.lower().endswith(".pdf"):
@@ -543,42 +564,29 @@ async def upload(file: UploadFile, user_id: str = Depends(get_user)):
     except Exception as e:
         return {"reply": f"Could not read file: {e}"}
 
-    # FIX: Remove NUL bytes that crash Postgres
-    text = text.replace("\x00", "").replace("\0", "")
+    text = text.replace("\x00", "")
     text = "".join(c for c in text if c.isprintable() or c in "\n\r\t ")
-
     if not text.strip():
-        return {"reply": "File is empty or could not extract text."}
+        return {"reply": "File is empty"}
 
-    # FIX: Save FULL file to DB in small 500-char chunks - costs 0 Groq tokens
-    # Before you did 1000-char chunks, now 450 to match search limit
-    chunks = [text[i:i+450] for i in range(0, len(text), 450)]
-    for idx, chunk in enumerate(chunks[:200]):  # max 200 chunks = ~100 pages
-        chunk = chunk.replace("\x00", "").strip()
-        if not chunk:
-            continue
+    chunks = [text[i:i+450] for i in range(0, len(text), 450)][:100]
+
+    # Save first 3 chunks NOW - so file is immediately searchable
+    for idx in range(min(3, len(chunks))):
         try:
-            # Keep same signature you had: save_memory(user_id, chunk, "document", 0.8)
-            save_memory(user_id, f"File:{file.filename} [{idx+1}/{len(chunks[:200])}] {chunk}", "document", 0.8)
-        except Exception as e:
-            print(f"Memory save skipped: {e}")
-            continue
+            save_memory(user_id, f"File:{file.filename} [{idx+1}/{len(chunks)}] {chunks[idx]}", "document", 0.8)
+        except:
+            pass
 
-    # FIX: Cheap summary - only first 2000 chars to Groq, not 12000
-    try:
-        res = groq_chat(
-            messages=[
-                {"role": "system", "content": "Summarize file in 3 short bullets, max 80 words."},
-                {"role": "user", "content": f"User uploaded {file.filename}. Content:\n{text[:2000]}"}
-            ],
-            max_tokens=120
-        )
-        reply = res.choices[0].message.content
-    except Exception as e:
-        print(f"groq_chat summary failed, fallback: {e}")
-        reply = f"File {file.filename} saved: {len(chunks[:200])} chunks indexed. Ask me anything about it."
+    # Rest in background - no timeout
+    if len(chunks) > 3:
+        background_tasks.add_task(save_chunks_background, user_id, file.filename, chunks, 3)
 
-    return {"reply": reply, "status": "indexed", "chunks": len(chunks[:200])}
+    return {
+        "reply": f"File {file.filename} saved: {len(chunks)} chunks indexed. Ask me anything about it.",
+        "status": "indexed", 
+        "chunks": len(chunks)
+    }
 
 @app.post("/summarize_full")
 @limiter.limit("10/minute")
