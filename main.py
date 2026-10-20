@@ -61,28 +61,42 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 
+
+FALLBACK_UNTIL = None
+LAST_FALLBACK_LOG = None
+
 def groq_chat(messages, max_tokens=300):
-    """
-    Fallback for Oct 2026: Only gpt-oss-20b and gpt-oss-120b are active on free/dev tier.
-    Llama models are Enterprise-only now -> will 404.
-    """
-    for model in ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]:
+    global FALLBACK_UNTIL, LAST_FALLBACK_LOG
+    
+    # If 20b is rate-limited, don't spam trying it
+    models = ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]
+    if FALLBACK_UNTIL and datetime.utcnow() < FALLBACK_UNTIL:
+        models = ["openai/gpt-oss-120b"] # skip 20b for now
+
+    for model in models:
         try:
-            return client.chat.completions.create(
+            res = client.chat.completions.create(
                 model=model,
                 messages=messages,
                 max_tokens=max_tokens
             )
+            FALLBACK_UNTIL = None # reset on success
+            return res
         except Exception as e:
             err = str(e).lower()
-            # If rate limit, too large, or model not accessible, try next
             if any(x in err for x in ["429", "413", "rate_limit", "too large", "decommissioned", "404", "access"]):
-                print(f"{model} failed ({str(e)[:120]}), trying next...")
+                # log only once per hour to avoid spam
+                now = datetime.utcnow()
+                if not LAST_FALLBACK_LOG or (now - LAST_FALLBACK_LOG).seconds > 3600:
+                    print(f"{model} failed ({str(e)[:120]}), trying next...")
+                    LAST_FALLBACK_LOG = now
+                
+                if "20b" in model and "429" in err:
+                    FALLBACK_UNTIL = now + timedelta(hours=1)
                 continue
             raise e
     
-    # If both fail, wait message
-    raise Exception("Both gpt-oss models hit daily limit. Try again in 1h or upgrade to Dev Tier at console.groq.com/settings/billing")
+    raise Exception("Both gpt-oss models hit daily limit. Resets 00:00 UTC (1am Lagos). Upgrade at console.groq.com/settings/billing")
 
 
 
