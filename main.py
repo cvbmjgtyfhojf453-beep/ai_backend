@@ -38,6 +38,7 @@ from fastapi.responses import StreamingResponse
 import io
 import time
 from collections import defaultdict
+from io import BytesIO
 
 load_dotenv()
 
@@ -420,8 +421,7 @@ def search_memory(user_id, query, limit=5):
         cur.execute("SELECT content FROM memories WHERE user_id=%s AND (privacy_mode IS NULL OR privacy_mode=false) ORDER BY embedding <=> %s::vector LIMIT %s", (user_id, emb, limit));
         result = cur.fetchall()
     conn.close()
-    return [r['content'] for r in result]
-
+    return [r['content'] for r in result
 def update_summary(user_id):
     try:
         facts = search_memory(user_id, "facts goals likes", 15)
@@ -479,27 +479,41 @@ def health():
 @limiter.limit("20/minute")
 async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_user)):
     try:
-        # FIX: Limit memories to 8 and trim length
-        raw_mems = search_memory(user_id, req.message, 8)  # limit to 8
-        context_parts = []
-        total_len = 0
-        for m in raw_mems:
-            txt = str(m).replace("\x00","")[:300]  # 300 chars max each
-            if total_len + len(txt) > 1500:  # max 1500 chars total context
-                break
-            context_parts.append(txt)
-            total_len += len(txt)
+        raw_mems = search_memory(user_id, req.message, 12)
         
-        context = "\n".join(context_parts)[:1500]
+        file_chunks = []
+        convos = []
+        
+        for m in raw_mems:
+            if isinstance(m, dict):
+                content = m.get('content', '') or m.get('text', '') or m.get('memory', '')
+            else:
+                content = getattr(m, 'content', '') or getattr(m, 'text', '') or str(m)
+            
+            content = content.replace("\x00","").strip()
+            if not content:
+                continue
 
-        # FIX: Trim user message
+            # Detect file vs chat
+            if len(content) > 100 and ("File:" not in content or "]" in content):
+                clean = content.split("]")[-1].strip() if content.startswith("File:") and "]" in content else content
+                file_chunks.append(clean[:600])
+            else:
+                convos.append(content[:300])
+
+        context_parts = file_chunks[:4] + convos[:2]
+        context = "\n---\n".join(context_parts)[:3000]
+
         user_msg = req.message.replace("\x00","")[:1500]
 
-        system = f"You are {req.persona}. Roast level {req.roast_level}/10. Facts: {context}. Reply in user's language, your name is OBANOR."
+        if file_chunks:
+            system = f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. Answer from DOCUMENTS:\n{context}"
+        else:
+            system = f"You are {req.persona}. Roast {req.roast_level}/10. Facts: {context}. Name OBANOR."
 
         res = groq_chat(
             messages=[
-                {"role": "system", "content": system[:2000]},  # system max 2000
+                {"role": "system", "content": system[:3500]},
                 {"role": "user", "content": user_msg}
             ],
             max_tokens=500
@@ -507,20 +521,18 @@ async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_us
         reply = res.choices[0].message.content
         
         try:
-            save_memory(user_id, f"User: {user_msg[:300]}\nAI: {reply[:300]}")
+            save_memory(user_id, f"User: {user_msg[:300]}\nAI: {reply[:300]}", "conversation", 0.7)
         except Exception as e:
-            print(f"save_memory in chat skipped: {e}")
+            print(f"save_memory skipped: {e}")
 
         return {"reply": reply}
         
     except Exception as e:
         if "413" in str(e) or "429" in str(e):
-            print("413/429 hit, retrying without context via fallback")
-            # Emergency retry with NO memory - using fallback
             try:
                 res = groq_chat(
                     messages=[
-                        {"role": "system", "content": f"You are {req.persona}. Roast level {req.roast_level}/10. Your name is OBANOR."},
+                        {"role": "system", "content": f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR."},
                         {"role": "user", "content": req.message[:800]}
                     ],
                     max_tokens=300
@@ -533,7 +545,7 @@ async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_us
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
+# Upload
 user_last_upload = defaultdict(float)
 
 def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx: int):
@@ -541,10 +553,12 @@ def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx:
         try:
             clean = chunks[idx].replace("\x00", "").strip()
             if clean:
-                save_memory(user_id, f"File:{filename} [{idx+1}/{len(chunks)}] {clean}", "document", 0.8)
+                save_memory(user_id, clean, "document", 0.8)  # NO File: prefix
         except Exception as e:
             print(f"Chunk {idx} skip: {e}")
             continue
+
+
 
 @app.post("/upload")
 async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
@@ -553,38 +567,52 @@ async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: s
         return {"reply": "Please wait 10s between uploads", "status": "rate_limited"}
     user_last_upload[user_id] = now
 
-    text = ""
     try:
+        file_bytes = await file.read()
+        print(f"Upload: {file.filename} {len(file_bytes)} bytes")
+
+        text = ""
         if file.filename.lower().endswith(".pdf"):
-            text = "".join([p.extract_text() or "" for p in PdfReader(file.file).pages])
+            reader = PdfReader(BytesIO(file_bytes))
+            parts = []
+            for p in reader.pages:
+                t = p.extract_text()
+                if t:
+                    parts.append(t)
+            text = "\n".join(parts)
+
         elif file.filename.lower().endswith(".docx"):
-            text = "\n".join([p.text for p in Document(file.file).paragraphs])
+            text = "\n".join([p.text for p in Document(BytesIO(file_bytes)).paragraphs])
         else:
-            text = (await file.read()).decode("utf-8", errors="ignore")
+            text = file_bytes.decode("utf-8", errors="ignore")
+
     except Exception as e:
+        print(f"Read error: {e}")
         return {"reply": f"Could not read file: {e}"}
 
     text = text.replace("\x00", "")
-    text = "".join(c for c in text if c.isprintable() or c in "\n\r\t ")
-    if not text.strip():
-        return {"reply": "File is empty"}
+    text = "".join(c for c in text if c.isprintable() or c in "\n\r\t ").strip()
 
-    chunks = [text[i:i+450] for i in range(0, len(text), 450)][:100]
+    if not text or len(text) < 20:
+        return {"reply": "File is empty or scanned image PDF. Please upload a PDF where you can select text, or upload .docx/.txt"}
 
-    # Save first 3 chunks NOW - so file is immediately searchable
+    print(f"EXTRACTED OK: {len(text)} chars preview: {text[:200]}")
+
+    chunks = [text[i:i+800] for i in range(0, len(text), 800)][:100]
+
+    # Save CLEAN text - NO File: prefix
     for idx in range(min(3, len(chunks))):
         try:
-            save_memory(user_id, f"File:{file.filename} [{idx+1}/{len(chunks)}] {chunks[idx]}", "document", 0.8)
-        except:
-            pass
+            save_memory(user_id, chunks[idx], "document", 0.8)
+        except Exception as e:
+            print(f"save_memory chunk {idx} failed: {e}")
 
-    # Rest in background - no timeout
     if len(chunks) > 3:
         background_tasks.add_task(save_chunks_background, user_id, file.filename, chunks, 3)
 
     return {
         "reply": f"File {file.filename} saved: {len(chunks)} chunks indexed. Ask me anything about it.",
-        "status": "indexed", 
+        "status": "indexed",
         "chunks": len(chunks)
     }
 
