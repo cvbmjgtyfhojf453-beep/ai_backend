@@ -416,12 +416,18 @@ def save_memory(user_id, content, category="general", importance=0.5, emotion=No
 def search_memory(user_id, query, limit=5):
     emb = embed_text(query, task="retrieval.query")
     conn = psycopg2.connect(DATABASE_URL)
-    register_vector(conn)
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT content FROM memories WHERE user_id=%s AND (privacy_mode IS NULL OR privacy_mode=false) ORDER BY embedding <=> %s::vector LIMIT %s", (user_id, emb, limit));
-        result = cur.fetchall()
-    conn.close()
-    return [r['content'] for r in result
+    try:
+        register_vector(conn)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT content FROM memories WHERE user_id=%s AND (privacy_mode IS NULL OR privacy_mode=false) ORDER BY embedding <=> %s::vector LIMIT %s",
+                (user_id, emb, limit)
+            )
+            result = cur.fetchall()
+        return [r['content'] for r in result]
+    finally:
+        conn.close()
+        
 def update_summary(user_id):
     try:
         facts = search_memory(user_id, "facts goals likes", 15)
