@@ -547,7 +547,8 @@ async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: s
         print(f"Upload: {file.filename} {len(file_bytes)} bytes")
 
         text = ""
-        if file.filename.lower().endswith(".pdf"):
+        try:
+            # FIX: Try PDF first even if filename is uploadXXX.tmp
             reader = PdfReader(BytesIO(file_bytes))
             parts = []
             for p in reader.pages:
@@ -555,11 +556,13 @@ async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: s
                 if t:
                     parts.append(t)
             text = "\n".join(parts)
-
-        elif file.filename.lower().endswith(".docx"):
-            text = "\n".join([p.text for p in Document(BytesIO(file_bytes)).paragraphs])
-        else:
-            text = file_bytes.decode("utf-8", errors="ignore")
+            print(f"PDF detected: {len(reader.pages)} pages")
+        except Exception as pdf_err:
+            print(f"Not a PDF ({pdf_err}), trying docx/txt")
+            try:
+                text = "\n".join([p.text for p in Document(BytesIO(file_bytes)).paragraphs])
+            except:
+                text = file_bytes.decode("utf-8", errors="ignore")
 
     except Exception as e:
         print(f"Read error: {e}")
@@ -575,10 +578,9 @@ async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: s
 
     chunks = [text[i:i+800] for i in range(0, len(text), 800)][:100]
 
-    # Save CLEAN text - NO File: prefix
     for idx in range(min(3, len(chunks))):
         try:
-            save_memory(user_id, chunks[idx], "document", 0.8)
+            save_memory(user_id, chunks[idx], "document", 0.8, privacy=True)
         except Exception as e:
             print(f"save_memory chunk {idx} failed: {e}")
 
