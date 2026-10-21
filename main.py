@@ -390,7 +390,6 @@ def embed_text(text: str, task="retrieval.passage"):
 
 def save_memory(user_id, content, category="general", importance=0.5, emotion=None, privacy=False):
     try:
-        # FIX: Remove NUL bytes that crash Postgres
         content = str(content).replace("\x00", "").replace("\0", "")
         content = "".join(c for c in content if c.isprintable() or c in "\n\r\t ").strip()
         if len(content) < 5:
@@ -398,17 +397,15 @@ def save_memory(user_id, content, category="general", importance=0.5, emotion=No
 
         emb = embed_text(content, task="retrieval.passage")
         conn = psycopg2.connect(DATABASE_URL)
-        register_vector(conn)
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO memories (id,user_id,content,embedding,category,importance,emotion,privacy_mode) VALUES (%s,%s,%s,%s::vector,%s,%s,%s,%s)",
-            (str(uuid.uuid4()), str(user_id), content, emb, category, importance, emotion, privacy))
-            conn.commit()
-        conn.close()
-        if not privacy:
-            try:
-                update_summary(user_id)
-            except Exception as e:
-                print(f"update_summary skipped: {e}")
+        try:
+            register_vector(conn)
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO memories (id,user_id,content,embedding,category,importance,emotion,privacy_mode) VALUES (%s,%s,%s,%s::vector,%s,%s,%s,%s)",
+                (str(uuid.uuid4()), str(user_id), content, emb, category, importance, emotion, privacy))
+                conn.commit()
+        finally:
+            conn.close()
+        # REMOVED update_summary from here completely
     except Exception as e:
         print(f"save_memory skipped: {e}")
         return
@@ -481,74 +478,44 @@ def update_summary(user_id):
 def health():
     return {"status": "ok"}
 
+
+# Chat
+
+last_summary_update = defaultdict(float)
+
 @app.post("/chat")
 @limiter.limit("20/minute")
-async def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_user)):
+async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
+    raw_mems = search_memory(user_id, req.message, 12)
+    print(f"DEBUG SEARCH: {len(raw_mems)} hits")
+
+    clean = []
+    for m in raw_mems:
+        c = m.get('content','') if isinstance(m, dict) else getattr(m,'content','') or str(m)
+        c = c.replace("\x00","").strip()
+        if not c: continue
+        if c.startswith("File:") and "]" in c:
+            c = c.split("]",1)[-1].strip()
+        clean.append(c)
+
+    context = "\n\n---\n\n".join(clean)[:6000]
+    user_msg = req.message.replace("\x00","")[:1500]
+
+    system = f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. DOCUMENTS:\n{context}\n\nUse DOCUMENTS to answer."
+
+    res = groq_chat(messages=[{"role":"system","content":system[:5000]},{"role":"user","content":user_msg}], max_tokens=600)
+    reply = res.choices[0].message.content
+
     try:
-        raw_mems = search_memory(user_id, req.message, 12)
-        
-        file_chunks = []
-        convos = []
-        
-        for m in raw_mems:
-            if isinstance(m, dict):
-                content = m.get('content', '') or m.get('text', '') or m.get('memory', '')
-            else:
-                content = getattr(m, 'content', '') or getattr(m, 'text', '') or str(m)
-            
-            content = content.replace("\x00","").strip()
-            if not content:
-                continue
+        save_memory(user_id, f"User: {user_msg[:300]}\nAI: {reply[:300]}", "conversation", 0.7, privacy=True)
+    except: pass
 
-            # Detect file vs chat
-            if len(content) > 100 and ("File:" not in content or "]" in content):
-                clean = content.split("]")[-1].strip() if content.startswith("File:") and "]" in content else content
-                file_chunks.append(clean[:600])
-            else:
-                convos.append(content[:300])
+    now = time.time()
+    if now - last_summary_update.get(user_id,0) > 300:
+        background_tasks.add_task(update_summary, user_id)
+        last_summary_update[user_id] = now
 
-        context_parts = file_chunks[:4] + convos[:2]
-        context = "\n---\n".join(context_parts)[:3000]
-
-        user_msg = req.message.replace("\x00","")[:1500]
-
-        if file_chunks:
-            system = f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. Answer from DOCUMENTS:\n{context}"
-        else:
-            system = f"You are {req.persona}. Roast {req.roast_level}/10. Facts: {context}. Name OBANOR."
-
-        res = groq_chat(
-            messages=[
-                {"role": "system", "content": system[:3500]},
-                {"role": "user", "content": user_msg}
-            ],
-            max_tokens=500
-        )
-        reply = res.choices[0].message.content
-        
-        try:
-            save_memory(user_id, f"User: {user_msg[:300]}\nAI: {reply[:300]}", "conversation", 0.7)
-        except Exception as e:
-            print(f"save_memory skipped: {e}")
-
-        return {"reply": reply}
-        
-    except Exception as e:
-        if "413" in str(e) or "429" in str(e):
-            try:
-                res = groq_chat(
-                    messages=[
-                        {"role": "system", "content": f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR."},
-                        {"role": "user", "content": req.message[:800]}
-                    ],
-                    max_tokens=300
-                )
-                return {"reply": res.choices[0].message.content}
-            except Exception as inner_e:
-                traceback.print_exc()
-                raise HTTPException(status_code=500, detail=str(inner_e))
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"reply": reply}
 
 
 # Upload
