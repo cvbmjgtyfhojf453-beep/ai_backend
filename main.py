@@ -39,6 +39,7 @@ import io
 import time
 from collections import defaultdict
 from io import BytesIO
+import fitz  # PyMuPDF
 
 load_dotenv()
 
@@ -526,7 +527,8 @@ def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx:
         try:
             clean = chunks[idx].replace("\x00", "").strip()
             if clean:
-                save_memory(user_id, clean, "document", 0.8)  # NO File: prefix
+                save_memory(user_id, clean, "document", 0.8, privacy=True)  # privacy=True = extra safe
+                time.sleep(0.2)  # avoid embedding rate limit
         except Exception as e:
             print(f"Chunk {idx} skip: {e}")
             continue
