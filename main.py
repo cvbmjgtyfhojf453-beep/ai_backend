@@ -413,14 +413,15 @@ def save_memory(user_id, content, category="general", importance=0.5, emotion=No
 
 def search_memory(user_id, query, limit=12):
     print(f"SEARCH USER_ID: {user_id} query={query[:50]}")
-    emb = embed_text(query, task="retrieval.query")
-    conn = psycopg2.connect(DATABASE_URL)
     try:
+        emb = embed_text(query, task="retrieval.query")
+        print(f"EMBEDDING OK len={len(emb)}")
+        conn = psycopg2.connect(DATABASE_URL)
         register_vector(conn)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT content FROM memories 
+                SELECT content, category FROM memories 
                 WHERE user_id=%s 
                 AND (
                     category = 'document' 
@@ -430,12 +431,22 @@ def search_memory(user_id, query, limit=12):
                 ORDER BY embedding <=> %s::vector 
                 LIMIT %s
                 """,
-                (user_id, emb, limit)
+                (str(user_id), emb, limit)
             )
-            result = cur.fetchall()
-        return [r['content'] for r in result]
-    finally:
+            rows = cur.fetchall()
+            print(f"HITS TOTAL: {len(rows)}")
+            # Debug: count docs
+            docs = [r for r in rows if r.get('category') == 'document' or 'File:' in r.get('content','')[:20]]
+            print(f"DOC HITS: {len(docs)}")
+
         conn.close()
+        # Return in format /chat expects
+        return [{"content": r['content']} for r in rows]
+        
+    except Exception as e:
+        print(f"search_memory FAILED: {e}")
+        import traceback; traceback.print_exc()
+        return []
         
 def update_summary(user_id):
     try:
@@ -554,58 +565,82 @@ def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx:
 async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
     print(f"UPLOAD USER_ID: {user_id}")
     now = time.time()
-    if now - user_last_upload[user_id] < 10:
+    if user_id in user_last_upload and now - user_last_upload[user_id] < 10:
         return {"reply": "Please wait 10s between uploads", "status": "rate_limited"}
     user_last_upload[user_id] = now
 
+    # FIX .tmp name
+    original_filename = file.filename or "document.pdf"
+    if original_filename.endswith(".tmp") or original_filename.startswith("upload"):
+        original_filename = "document.pdf"
+    print(f"REAL FILE: {original_filename} (client sent {file.filename})")
+
     try:
         file_bytes = await file.read()
-        print(f"Upload: {file.filename} {len(file_bytes)} bytes")
+        print(f"Upload size: {len(file_bytes)} bytes")
+        if len(file_bytes) == 0:
+            return {"reply": "Empty file", "status": "empty"}
 
         text = ""
+        is_pdf = False
         try:
             reader = PdfReader(BytesIO(file_bytes))
             parts = [p.extract_text() or "" for p in reader.pages]
             text = "\n".join(parts)
-            print(f"PDF detected: {len(reader.pages)} pages")
+            is_pdf = True
+            print(f"PDF detected: {len(reader.pages)} pages, text len {len(text)}")
         except Exception as pdf_err:
             print(f"Not PDF ({pdf_err}), trying docx/txt")
             try:
                 text = "\n".join([p.text for p in Document(BytesIO(file_bytes)).paragraphs])
             except:
-                text = file_bytes.decode("utf-8", errors="ignore")
+                # ONLY decode as text if NOT pdf
+                if not is_pdf:
+                    text = file_bytes.decode("utf-8", errors="ignore")
+                else:
+                    text = ""
 
     except Exception as e:
         print(f"Read error: {e}")
-        return {"reply": f"Could not read file: {e}"}
+        return {"reply": f"Could not read file: {e}", "status": "error"}
 
+    # Clean
     text = text.replace("\x00", "").strip()
+    # BLOCK raw binary
+    if text.startswith("%PDF") or text[:100].count("%PDF") > 0:
+        print("BLOCKED: raw PDF binary detected")
+        return {"reply": "This PDF is a scanned image, no selectable text found.", "status": "empty"}
+
     text = "".join(c for c in text if c.isprintable() or c in "\n\r\t ").strip()
 
     if not text or len(text) < 20:
-        return {"reply": "File is empty or scanned image PDF"}
+        print("Empty after clean")
+        return {"reply": "File is empty or scanned image PDF (no text to read)", "status": "empty"}
 
     print(f"EXTRACTED OK: {len(text)} chars")
 
-    # FIX: spaced sampling + 1500 chars = covers whole book, fast
+    # Chunk whole book
     all_chunks = [text[i:i+1500] for i in range(0, len(text), 1500)]
     step = max(1, len(all_chunks) // 80)
     chunks = [all_chunks[i] for i in range(0, len(all_chunks), step)][:80]
+    print(f"CHUNKS: total={len(all_chunks)} sampled={len(chunks)}")
 
-    # Save first 3 NOW with privacy=False
+    # Save 3 now
     for idx in range(min(3, len(chunks))):
         try:
-            save_memory(user_id, f"File: {file.filename} {chunks[idx]}", "document", 0.8, privacy=False)
+            save_memory(user_id, f"File: {original_filename} {chunks[idx]}", "document", 0.8, privacy=False)
+            print(f"CHUNK {idx} SAVED OK")
         except Exception as e:
-            print(f"save chunk {idx} failed: {e}")
+            print(f"save {idx} FAILED: {e}")
 
     if len(chunks) > 3:
-        background_tasks.add_task(save_chunks_background, user_id, file.filename, chunks, 3)
+        background_tasks.add_task(save_chunks_background, user_id, original_filename, chunks, 3)
 
     return {
-        "reply": f"File {file.filename} saved: {len(chunks)} chunks indexed (covering whole book). Ask me anything.",
+        "reply": f"File {original_filename} saved: {len(chunks)} chunks indexed. Ask me anything.",
         "status": "indexed",
-        "chunks": len(chunks)
+        "chunks": len(chunks),
+        "file": original_filename
     }
 
 @app.post("/summarize_full")
