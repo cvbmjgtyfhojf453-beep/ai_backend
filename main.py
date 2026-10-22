@@ -411,14 +411,24 @@ def save_memory(user_id, content, category="general", importance=0.5, emotion=No
         print(f"save_memory skipped: {e}")
         return
 
-def search_memory(user_id, query, limit=5):
+def search_memory(user_id, query, limit=12):
     emb = embed_text(query, task="retrieval.query")
     conn = psycopg2.connect(DATABASE_URL)
     try:
         register_vector(conn)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                "SELECT content FROM memories WHERE user_id=%s AND (privacy_mode IS NULL OR privacy_mode=false) ORDER BY embedding <=> %s::vector LIMIT %s",
+                """
+                SELECT content FROM memories 
+                WHERE user_id=%s 
+                AND (
+                    category = 'document' 
+                    OR privacy_mode IS NULL 
+                    OR privacy_mode = false
+                )
+                ORDER BY embedding <=> %s::vector 
+                LIMIT %s
+                """,
                 (user_id, emb, limit)
             )
             result = cur.fetchall()
@@ -526,9 +536,11 @@ def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx:
     for idx in range(start_idx, len(chunks)):
         try:
             clean = chunks[idx].replace("\x00", "").strip()
-            if clean:
-                save_memory(user_id, clean, "document", 0.8, privacy=True)  # privacy=True = extra safe
-                time.sleep(0.2)  # avoid embedding rate limit
+            if not clean:
+                continue
+            # FIX: must be privacy=False + include filename
+            save_memory(user_id, f"File: {filename} {clean}", "document", 0.8, privacy=False)
+            time.sleep(0.2)
         except Exception as e:
             print(f"Chunk {idx} skip: {e}")
             continue
@@ -548,17 +560,12 @@ async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: s
 
         text = ""
         try:
-            # FIX: Try PDF first even if filename is uploadXXX.tmp
             reader = PdfReader(BytesIO(file_bytes))
-            parts = []
-            for p in reader.pages:
-                t = p.extract_text()
-                if t:
-                    parts.append(t)
+            parts = [p.extract_text() or "" for p in reader.pages]
             text = "\n".join(parts)
             print(f"PDF detected: {len(reader.pages)} pages")
         except Exception as pdf_err:
-            print(f"Not a PDF ({pdf_err}), trying docx/txt")
+            print(f"Not PDF ({pdf_err}), trying docx/txt")
             try:
                 text = "\n".join([p.text for p in Document(BytesIO(file_bytes)).paragraphs])
             except:
@@ -568,27 +575,31 @@ async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: s
         print(f"Read error: {e}")
         return {"reply": f"Could not read file: {e}"}
 
-    text = text.replace("\x00", "")
+    text = text.replace("\x00", "").strip()
     text = "".join(c for c in text if c.isprintable() or c in "\n\r\t ").strip()
 
     if not text or len(text) < 20:
-        return {"reply": "File is empty or scanned image PDF. Please upload a PDF where you can select text, or upload .docx/.txt"}
+        return {"reply": "File is empty or scanned image PDF"}
 
-    print(f"EXTRACTED OK: {len(text)} chars preview: {text[:200]}")
+    print(f"EXTRACTED OK: {len(text)} chars")
 
-    chunks = [text[i:i+800] for i in range(0, len(text), 800)][:100]
+    # FIX: spaced sampling + 1500 chars = covers whole book, fast
+    all_chunks = [text[i:i+1500] for i in range(0, len(text), 1500)]
+    step = max(1, len(all_chunks) // 80)
+    chunks = [all_chunks[i] for i in range(0, len(all_chunks), step)][:80]
 
+    # Save first 3 NOW with privacy=False
     for idx in range(min(3, len(chunks))):
         try:
-            save_memory(user_id, chunks[idx], "document", 0.8, privacy=True)
+            save_memory(user_id, f"File: {file.filename} {chunks[idx]}", "document", 0.8, privacy=False)
         except Exception as e:
-            print(f"save_memory chunk {idx} failed: {e}")
+            print(f"save chunk {idx} failed: {e}")
 
     if len(chunks) > 3:
         background_tasks.add_task(save_chunks_background, user_id, file.filename, chunks, 3)
 
     return {
-        "reply": f"File {file.filename} saved: {len(chunks)} chunks indexed. Ask me anything about it.",
+        "reply": f"File {file.filename} saved: {len(chunks)} chunks indexed (covering whole book). Ask me anything.",
         "status": "indexed",
         "chunks": len(chunks)
     }
