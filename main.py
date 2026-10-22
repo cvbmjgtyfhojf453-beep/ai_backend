@@ -412,6 +412,7 @@ def save_memory(user_id, content, category="general", importance=0.5, emotion=No
         return
 
 def search_memory(user_id, query, limit=12):
+    print(f"SEARCH USER_ID: {user_id} query={query[:50]}")
     emb = embed_text(query, task="retrieval.query")
     conn = psycopg2.connect(DATABASE_URL)
     try:
@@ -497,6 +498,7 @@ last_summary_update = defaultdict(float)
 @app.post("/chat")
 @limiter.limit("20/minute")
 async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
+    print(f"CHAT USER_ID: {user_id}")
     raw_mems = search_memory(user_id, req.message, 12)
     print(f"DEBUG SEARCH: {len(raw_mems)} hits")
 
@@ -533,6 +535,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
 user_last_upload = defaultdict(float)
 
 def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx: int):
+    print(f"BG SAVE USER_ID: {user_id} file={filename} start={start_idx} total={len(chunks)}")
     for idx in range(start_idx, len(chunks)):
         try:
             clean = chunks[idx].replace("\x00", "").strip()
@@ -549,6 +552,7 @@ def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx:
 
 @app.post("/upload")
 async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
+    print(f"UPLOAD USER_ID: {user_id}")
     now = time.time()
     if now - user_last_upload[user_id] < 10:
         return {"reply": "Please wait 10s between uploads", "status": "rate_limited"}
