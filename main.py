@@ -552,7 +552,6 @@ def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx:
             clean = chunks[idx].replace("\x00", "").strip()
             if not clean:
                 continue
-            # FIX: must be privacy=False + include filename
             save_memory(user_id, f"File: {filename} {clean}", "document", 0.8, privacy=False)
             time.sleep(0.2)
         except Exception as e:
@@ -563,84 +562,60 @@ def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx:
 
 @app.post("/upload")
 async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
-    print(f"UPLOAD USER_ID: {user_id}")
     now = time.time()
-    if user_id in user_last_upload and now - user_last_upload[user_id] < 10:
+    if now - user_last_upload[user_id] < 10:
         return {"reply": "Please wait 10s between uploads", "status": "rate_limited"}
     user_last_upload[user_id] = now
 
-    # FIX .tmp name
-    original_filename = file.filename or "document.pdf"
-    if original_filename.endswith(".tmp") or original_filename.startswith("upload"):
-        original_filename = "document.pdf"
-    print(f"REAL FILE: {original_filename} (client sent {file.filename})")
-
     try:
         file_bytes = await file.read()
-        print(f"Upload size: {len(file_bytes)} bytes")
-        if len(file_bytes) == 0:
-            return {"reply": "Empty file", "status": "empty"}
+        print(f"Upload: {file.filename} {len(file_bytes)} bytes")
 
         text = ""
-        is_pdf = False
         try:
+            # FIX: Try PDF first even if filename is uploadXXX.tmp
             reader = PdfReader(BytesIO(file_bytes))
-            parts = [p.extract_text() or "" for p in reader.pages]
+            parts = []
+            for p in reader.pages:
+                t = p.extract_text()
+                if t:
+                    parts.append(t)
             text = "\n".join(parts)
-            is_pdf = True
-            print(f"PDF detected: {len(reader.pages)} pages, text len {len(text)}")
+            print(f"PDF detected: {len(reader.pages)} pages")
         except Exception as pdf_err:
-            print(f"Not PDF ({pdf_err}), trying docx/txt")
+            print(f"Not a PDF ({pdf_err}), trying docx/txt")
             try:
                 text = "\n".join([p.text for p in Document(BytesIO(file_bytes)).paragraphs])
             except:
-                # ONLY decode as text if NOT pdf
-                if not is_pdf:
-                    text = file_bytes.decode("utf-8", errors="ignore")
-                else:
-                    text = ""
+                text = file_bytes.decode("utf-8", errors="ignore")
 
     except Exception as e:
         print(f"Read error: {e}")
-        return {"reply": f"Could not read file: {e}", "status": "error"}
+        return {"reply": f"Could not read file: {e}"}
 
-    # Clean
-    text = text.replace("\x00", "").strip()
-    # BLOCK raw binary
-    if text.startswith("%PDF") or text[:100].count("%PDF") > 0:
-        print("BLOCKED: raw PDF binary detected")
-        return {"reply": "This PDF is a scanned image, no selectable text found.", "status": "empty"}
-
+    text = text.replace("\x00", "")
     text = "".join(c for c in text if c.isprintable() or c in "\n\r\t ").strip()
 
     if not text or len(text) < 20:
-        print("Empty after clean")
-        return {"reply": "File is empty or scanned image PDF (no text to read)", "status": "empty"}
+        return {"reply": "File is empty or scanned image PDF. Please upload a PDF where you can select text, or upload .docx/.txt"}
 
-    print(f"EXTRACTED OK: {len(text)} chars")
+    print(f"EXTRACTED OK: {len(text)} chars preview: {text[:200]}")
 
-    # Chunk whole book
-    all_chunks = [text[i:i+1500] for i in range(0, len(text), 1500)]
-    step = max(1, len(all_chunks) // 80)
-    chunks = [all_chunks[i] for i in range(0, len(all_chunks), step)][:80]
-    print(f"CHUNKS: total={len(all_chunks)} sampled={len(chunks)}")
+    chunks = [text[i:i+800] for i in range(0, len(text), 800)][:100]
 
-    # Save 3 now
     for idx in range(min(3, len(chunks))):
         try:
-            save_memory(user_id, f"File: {original_filename} {chunks[idx]}", "document", 0.8, privacy=False)
-            print(f"CHUNK {idx} SAVED OK")
+            save_memory(user_id, chunks[idx], "document", 0.8, privacy=True)
         except Exception as e:
-            print(f"save {idx} FAILED: {e}")
+            print(f"save_memory chunk {idx} failed: {e}")
 
     if len(chunks) > 3:
-        background_tasks.add_task(save_chunks_background, user_id, original_filename, chunks, 3)
+        background_tasks.add_task(save_chunks_background, user_id, file.filename, chunks, 3)
 
     return {
-        "reply": f"File {original_filename} saved: {len(chunks)} chunks indexed. Ask me anything.",
+        "reply": f"File {file.filename} saved: {len(chunks)} chunks indexed. Ask me anything about it.",
         "status": "indexed",
-        "chunks": len(chunks),
-        "file": original_filename
+        "chunks": len(chunks)
     }
 
 @app.post("/summarize_full")
