@@ -10,7 +10,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy.orm import sessionmaker
 import os, json, uuid
 from datetime import datetime, timedelta
-from fastapi import FastAPI, UploadFile, Depends, HTTPException, Request, BackgroundTasks, File
+from fastapi import FastAPI, UploadFile, Depends, HTTPException, Request, BackgroundTasks, File, Form
 # from fastapi.security import OAuth2PasswordBearer
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -561,7 +561,12 @@ def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx:
 
 
 @app.post("/upload")
-async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
+async def upload(
+    file: UploadFile, 
+    background_tasks: BackgroundTasks, 
+    user_id: str = Depends(get_user),
+    filename: str = Form(None)  # <-- ADD FOR ANDROID
+):
     now = time.time()
     if now - user_last_upload.get(user_id, 0) < 10:
         return {"reply": "Please wait 10s between uploads", "status": "rate_limited"}
@@ -569,8 +574,26 @@ async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: s
 
     try:
         file_bytes = await file.read()
-        original_filename = file.filename
-        print(f"Upload: REAL FILE: {original_filename} {len(file_bytes)} bytes USER_ID: {user_id}")
+        
+        # ANDROID FIX: get real name from form field
+        original_filename = filename or file.filename or "document.pdf"
+        
+        # Clean .tmp
+        if ".tmp" in original_filename or original_filename.startswith("upload"):
+            print(f"CD header: {file.headers if hasattr(file, 'headers') else 'no headers'}")
+            ext = ".pdf"
+            if file.content_type:
+                if "word" in file.content_type or "docx" in file.content_type:
+                    ext = ".docx"
+                elif "text" in file.content_type:
+                    ext = ".txt"
+            # If frontend sent real name in filename field, it will already be used
+            # This is last fallback
+            if original_filename.startswith("upload"):
+                original_filename = f"document{ext}"
+            print(f"Fixed .tmp to: {original_filename}")
+
+        print(f"Upload: REAL FILE: {original_filename} {len(file_bytes)} bytes USER_ID: {user_id} type={file.content_type}")
 
         text = ""
         try:
@@ -591,7 +614,6 @@ async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: s
     if not text or len(text) < 20:
         return {"reply": "File is empty or scanned image PDF"}
 
-    # GROQ MAX 12000
     def chunk_text_groq(txt: str, chunk_size: int = 12000, overlap: int = 800):
         if len(txt) <= chunk_size:
             return [txt]
@@ -612,13 +634,13 @@ async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: s
         return chunks
 
     chunks = chunk_text_groq(text, 12000, 800)
-    print(f"EXTRACTED OK: {len(text)} chars -> {len(chunks)} chunks")
+    print(f"EXTRACTED OK: {len(text)} chars -> {len(chunks)} chunks File: {original_filename}")
 
-    # PRIVACY=TRUE as you wanted
+    # First 2 now, rest background
     for idx in range(min(2, len(chunks))):
         try:
             save_memory(user_id, f"File: {original_filename} {chunks[idx]}", "document", 0.8, privacy=True)
-            print(f"CHUNK {idx} SAVED OK privacy=True")
+            print(f"CHUNK {idx} SAVED OK privacy=True File: {original_filename}")
         except Exception as e:
             print(f"chunk {idx} failed: {e}")
 
@@ -630,6 +652,7 @@ async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: s
         "status": "indexed",
         "chunks": len(chunks)
     }
+
 
 @app.post("/summarize_full")
 @limiter.limit("10/minute")
