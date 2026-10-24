@@ -411,7 +411,7 @@ def save_memory(user_id, content, category="general", importance=0.5, emotion=No
         print(f"save_memory skipped: {e}")
         return
 
-def search_memory(user_id, query, limit=12):
+def search_memory(user_id, query, limit=20):  # 20 for Groq 128k
     print(f"SEARCH USER_ID: {user_id} query={query[:50]}")
     try:
         emb = embed_text(query, task="retrieval.query")
@@ -435,12 +435,10 @@ def search_memory(user_id, query, limit=12):
             )
             rows = cur.fetchall()
             print(f"HITS TOTAL: {len(rows)}")
-            # Debug: count docs
             docs = [r for r in rows if r.get('category') == 'document' or 'File:' in r.get('content','')[:20]]
             print(f"DOC HITS: {len(docs)}")
 
         conn.close()
-        # Return in format /chat expects
         return [{"content": r['content']} for r in rows]
         
     except Exception as e:
@@ -546,13 +544,15 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
 user_last_upload = defaultdict(float)
 
 def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx: int):
-    print(f"BG SAVE USER_ID: {user_id} file={filename} start={start_idx} total={len(chunks)}")
+    print(f"BG SAVE USER_ID: {user_id} file={filename} start={start_idx} total={len(chunks)} privacy=True")
     for idx in range(start_idx, len(chunks)):
         try:
             clean = chunks[idx].replace("\x00", "").strip()
             if not clean:
                 continue
-            save_memory(user_id, f"File: {filename} {clean}", "document", 0.8, privacy=False)
+            # PRIVACY=TRUE to match your main upload
+            save_memory(user_id, f"File: {filename} {clean}", "document", 0.8, privacy=True)
+            print(f"CHUNK {idx} SAVED OK privacy=True len={len(clean)}")
             time.sleep(0.2)
         except Exception as e:
             print(f"Chunk {idx} skip: {e}")
@@ -563,57 +563,70 @@ def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx:
 @app.post("/upload")
 async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
     now = time.time()
-    if now - user_last_upload[user_id] < 10:
+    if now - user_last_upload.get(user_id, 0) < 10:
         return {"reply": "Please wait 10s between uploads", "status": "rate_limited"}
     user_last_upload[user_id] = now
 
     try:
         file_bytes = await file.read()
-        print(f"Upload: {file.filename} {len(file_bytes)} bytes")
+        original_filename = file.filename
+        print(f"Upload: REAL FILE: {original_filename} {len(file_bytes)} bytes USER_ID: {user_id}")
 
         text = ""
         try:
-            # FIX: Try PDF first even if filename is uploadXXX.tmp
             reader = PdfReader(BytesIO(file_bytes))
-            parts = []
-            for p in reader.pages:
-                t = p.extract_text()
-                if t:
-                    parts.append(t)
+            parts = [p.extract_text() or "" for p in reader.pages]
             text = "\n".join(parts)
-            print(f"PDF detected: {len(reader.pages)} pages")
-        except Exception as pdf_err:
-            print(f"Not a PDF ({pdf_err}), trying docx/txt")
+        except:
             try:
                 text = "\n".join([p.text for p in Document(BytesIO(file_bytes)).paragraphs])
             except:
                 text = file_bytes.decode("utf-8", errors="ignore")
-
     except Exception as e:
-        print(f"Read error: {e}")
         return {"reply": f"Could not read file: {e}"}
 
-    text = text.replace("\x00", "")
+    text = text.replace("\x00", "").strip()
     text = "".join(c for c in text if c.isprintable() or c in "\n\r\t ").strip()
 
     if not text or len(text) < 20:
-        return {"reply": "File is empty or scanned image PDF. Please upload a PDF where you can select text, or upload .docx/.txt"}
+        return {"reply": "File is empty or scanned image PDF"}
 
-    print(f"EXTRACTED OK: {len(text)} chars preview: {text[:200]}")
+    # GROQ MAX 12000
+    def chunk_text_groq(txt: str, chunk_size: int = 12000, overlap: int = 800):
+        if len(txt) <= chunk_size:
+            return [txt]
+        chunks = []
+        start = 0
+        while start < len(txt):
+            end = start + chunk_size
+            if end < len(txt):
+                bp = txt.rfind('\n', end-800, end)
+                if bp == -1:
+                    bp = txt.rfind('. ', end-800, end)
+                if bp != -1:
+                    end = bp + 1
+            c = txt[start:end].strip()
+            if c:
+                chunks.append(c)
+            start = end - overlap
+        return chunks
 
-    chunks = [text[i:i+800] for i in range(0, len(text), 800)][:100]
+    chunks = chunk_text_groq(text, 12000, 800)
+    print(f"EXTRACTED OK: {len(text)} chars -> {len(chunks)} chunks")
 
-    for idx in range(min(3, len(chunks))):
+    # PRIVACY=TRUE as you wanted
+    for idx in range(min(2, len(chunks))):
         try:
-            save_memory(user_id, chunks[idx], "document", 0.8, privacy=True)
+            save_memory(user_id, f"File: {original_filename} {chunks[idx]}", "document", 0.8, privacy=True)
+            print(f"CHUNK {idx} SAVED OK privacy=True")
         except Exception as e:
-            print(f"save_memory chunk {idx} failed: {e}")
+            print(f"chunk {idx} failed: {e}")
 
-    if len(chunks) > 3:
-        background_tasks.add_task(save_chunks_background, user_id, file.filename, chunks, 3)
+    if len(chunks) > 2:
+        background_tasks.add_task(save_chunks_background, user_id, original_filename, chunks, 2)
 
     return {
-        "reply": f"File {file.filename} saved: {len(chunks)} chunks indexed. Ask me anything about it.",
+        "reply": f"File {original_filename} saved: {len(chunks)} chunks (private). Ask me anything.",
         "status": "indexed",
         "chunks": len(chunks)
     }
