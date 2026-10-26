@@ -614,7 +614,7 @@ async def upload(
     if not text or len(text) < 20:
         return {"reply": "File is empty or scanned image PDF"}
 
-    def chunk_text_groq(txt: str, chunk_size: int = 12000, overlap: int = 800):
+        def chunk_text_groq(txt: str, chunk_size: int = 1000, overlap: int = 200):
         if len(txt) <= chunk_size:
             return [txt]
         chunks = []
@@ -622,21 +622,27 @@ async def upload(
         while start < len(txt):
             end = start + chunk_size
             if end < len(txt):
-                bp = txt.rfind('\n', end-800, end)
+                bp = txt.rfind('\n', end-400, end)
                 if bp == -1:
-                    bp = txt.rfind('. ', end-800, end)
+                    bp = txt.rfind('. ', end-400, end)
+                if bp == -1:
+                    bp = txt.rfind(' ', end-200, end)
                 if bp != -1:
                     end = bp + 1
             c = txt[start:end].strip()
-            if c:
+            if c and len(c) > 50:
                 chunks.append(c)
             start = end - overlap
+            if start < 0:
+                start = 0
+            if start >= len(txt):
+                break
         return chunks
 
-    chunks = chunk_text_groq(text, 12000, 800)
+    chunks = chunk_text_groq(text, 1000, 200)
     print(f"EXTRACTED OK: {len(text)} chars -> {len(chunks)} chunks File: {original_filename}")
 
-    # First 2 now, rest background
+    # First 2 now, rest background (same as before)
     for idx in range(min(2, len(chunks))):
         try:
             save_memory(user_id, f"File: {original_filename} {chunks[idx]}", "document", 0.8, privacy=True)
