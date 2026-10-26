@@ -565,7 +565,7 @@ async def upload(
     file: UploadFile, 
     background_tasks: BackgroundTasks, 
     user_id: str = Depends(get_user),
-    filename: str = Form(None)  # <-- ADD FOR ANDROID
+    filename: str = Form(None)  # <-- ADD THIS
 ):
     now = time.time()
     if now - user_last_upload.get(user_id, 0) < 10:
@@ -574,23 +574,17 @@ async def upload(
 
     try:
         file_bytes = await file.read()
-        
-        # ANDROID FIX: get real name from form field
+        # FIX: use real filename if frontend sends it, otherwise use file.filename
         original_filename = filename or file.filename or "document.pdf"
         
-        # Clean .tmp
+        # If it's still .tmp, clean it
         if ".tmp" in original_filename or original_filename.startswith("upload"):
-            print(f"CD header: {file.headers if hasattr(file, 'headers') else 'no headers'}")
-            ext = ".pdf"
-            if file.content_type:
-                if "word" in file.content_type or "docx" in file.content_type:
-                    ext = ".docx"
-                elif "text" in file.content_type:
-                    ext = ".txt"
-            # If frontend sent real name in filename field, it will already be used
-            # This is last fallback
-            if original_filename.startswith("upload"):
-                original_filename = f"document{ext}"
+            # Try to get from header
+            cd = file.headers.get("content-disposition", "") if hasattr(file, 'headers') else ""
+            print(f"CD header: {cd}")
+            # fallback to friendly name with correct extension
+            ext = ".pdf" if file.content_type == "application/pdf" else ".docx" if "word" in (file.content_type or "") else ".pdf"
+            original_filename = f"document{ext}"
             print(f"Fixed .tmp to: {original_filename}")
 
         print(f"Upload: REAL FILE: {original_filename} {len(file_bytes)} bytes USER_ID: {user_id} type={file.content_type}")
@@ -608,13 +602,13 @@ async def upload(
     except Exception as e:
         return {"reply": f"Could not read file: {e}"}
 
+    # ... rest is same as your 12000 version
     text = text.replace("\x00", "").strip()
     text = "".join(c for c in text if c.isprintable() or c in "\n\r\t ").strip()
-
     if not text or len(text) < 20:
         return {"reply": "File is empty or scanned image PDF"}
 
-        def chunk_text_groq(txt: str, chunk_size: int = 1000, overlap: int = 200):
+    def chunk_text_groq(txt: str, chunk_size: int = 1000, overlap: int = 200):
         if len(txt) <= chunk_size:
             return [txt]
         chunks = []
@@ -642,7 +636,6 @@ async def upload(
     chunks = chunk_text_groq(text, 1000, 200)
     print(f"EXTRACTED OK: {len(text)} chars -> {len(chunks)} chunks File: {original_filename}")
 
-    # First 2 now, rest background (same as before)
     for idx in range(min(2, len(chunks))):
         try:
             save_memory(user_id, f"File: {original_filename} {chunks[idx]}", "document", 0.8, privacy=True)
@@ -654,7 +647,7 @@ async def upload(
         background_tasks.add_task(save_chunks_background, user_id, original_filename, chunks, 2)
 
     return {
-        "reply": f"File {original_filename} saved: {len(chunks)} chunks (private). Ask me anything.",
+        "reply": f"File {original_filename} saved: {len(chunks)} chunks (private). Ask me anything. (Note:Be specific about the file name, not to confuse the AI, so you don't get wrong reply.)",
         "status": "indexed",
         "chunks": len(chunks)
     }
