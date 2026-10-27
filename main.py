@@ -530,9 +530,11 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         if not c: 
             continue
         if c.startswith("File:"):
-            parts = c.split(" ", 2)
-            if len(parts) == 3:
-                c = parts[2]
+            # FIX: handles filenames with spaces like "My Resume.pdf"
+            first_space = c.find(" ")
+            second_space = c.find(" ", first_space+1) if first_space != -1 else -1
+            if second_space != -1:
+                c = c[second_space+1:]
         if len(c) > 700:
             c = c[:700]
         clean.append(c)
@@ -564,7 +566,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
     return {"reply": reply}
 
 
-# Upload
+# Upload helpers
 user_last_upload = defaultdict(float)
 
 def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx: int):
@@ -574,7 +576,6 @@ def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx:
             clean = chunks[idx].replace("\x00", "").strip()
             if not clean:
                 continue
-            # PRIVACY=TRUE to match your main upload
             save_memory(user_id, f"File: {filename} {clean}", "document", 0.8, privacy=True)
             print(f"CHUNK {idx} SAVED OK privacy=True len={len(clean)}")
             time.sleep(0.2)
@@ -582,14 +583,37 @@ def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx:
             print(f"Chunk {idx} skip: {e}")
             continue
 
-
+def chunk_text_groq(txt: str, chunk_size: int = 1000, overlap: int = 200):
+    if len(txt) <= chunk_size:
+        return [txt]
+    chunks = []
+    start = 0
+    while start < len(txt):
+        end = start + chunk_size
+        if end < len(txt):
+            bp = txt.rfind('\n', end-400, end)
+            if bp == -1:
+                bp = txt.rfind('. ', end-400, end)
+            if bp == -1:
+                bp = txt.rfind(' ', end-200, end)
+            if bp != -1:
+                end = bp + 1
+        c = txt[start:end].strip()
+        if c and len(c) > 50:
+            chunks.append(c)
+        start = end - overlap
+        if start < 0:
+            start = 0
+        if start >= len(txt):
+            break
+    return chunks
 
 @app.post("/upload")
 async def upload(
     file: UploadFile, 
     background_tasks: BackgroundTasks, 
     user_id: str = Depends(get_user),
-    filename: str = Form(None)  # <-- ADD THIS
+    filename: str = Form(None)
 ):
     now = time.time()
     if now - user_last_upload.get(user_id, 0) < 10:
@@ -598,15 +622,9 @@ async def upload(
 
     try:
         file_bytes = await file.read()
-        # FIX: use real filename if frontend sends it, otherwise use file.filename
         original_filename = filename or file.filename or "document.pdf"
         
-        # If it's still .tmp, clean it
         if ".tmp" in original_filename or original_filename.startswith("upload"):
-            # Try to get from header
-            cd = file.headers.get("content-disposition", "") if hasattr(file, 'headers') else ""
-            print(f"CD header: {cd}")
-            # fallback to friendly name with correct extension
             ext = ".pdf" if file.content_type == "application/pdf" else ".docx" if "word" in (file.content_type or "") else ".pdf"
             original_filename = f"document{ext}"
             print(f"Fixed .tmp to: {original_filename}")
@@ -626,36 +644,10 @@ async def upload(
     except Exception as e:
         return {"reply": f"Could not read file: {e}"}
 
-    # ... rest is same as your 12000 version
     text = text.replace("\x00", "").strip()
     text = "".join(c for c in text if c.isprintable() or c in "\n\r\t ").strip()
     if not text or len(text) < 20:
         return {"reply": "File is empty or scanned image PDF"}
-
-    def chunk_text_groq(txt: str, chunk_size: int = 1000, overlap: int = 200):
-        if len(txt) <= chunk_size:
-            return [txt]
-        chunks = []
-        start = 0
-        while start < len(txt):
-            end = start + chunk_size
-            if end < len(txt):
-                bp = txt.rfind('\n', end-400, end)
-                if bp == -1:
-                    bp = txt.rfind('. ', end-400, end)
-                if bp == -1:
-                    bp = txt.rfind(' ', end-200, end)
-                if bp != -1:
-                    end = bp + 1
-            c = txt[start:end].strip()
-            if c and len(c) > 50:
-                chunks.append(c)
-            start = end - overlap
-            if start < 0:
-                start = 0
-            if start >= len(txt):
-                break
-        return chunks
 
     chunks = chunk_text_groq(text, 1000, 200)
     print(f"EXTRACTED OK: {len(text)} chars -> {len(chunks)} chunks File: {original_filename}")
@@ -671,10 +663,11 @@ async def upload(
         background_tasks.add_task(save_chunks_background, user_id, original_filename, chunks, 2)
 
     return {
-        "reply": f"File {original_filename} saved: {len(chunks)} chunks (private). Ask me anything. (Note:Be specific about the file name, not to confuse the AI, so you don't get wrong reply.)",
+        "reply": f"File {original_filename} saved: {len(chunks)} chunks (private). Ask me anything. (Note:Be specific about the file name, not to confuse the AI, so you don't get wrong reply). File will fully save for 4 to 30 seconds depending on how large the file is, then the AI can have access to the full content of the file, first two pages saves for two seconds so the AI can reply correctly regarding the first two pages in the first two seconds.",
         "status": "indexed",
         "chunks": len(chunks)
     }
+
 
 
 @app.post("/summarize_full")
