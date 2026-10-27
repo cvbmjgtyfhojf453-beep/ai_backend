@@ -520,7 +520,7 @@ last_summary_update = defaultdict(float)
 @limiter.limit("20/minute")
 async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
     print(f"CHAT USER_ID: {user_id}")
-    raw_mems = search_memory(user_id, req.message, 5)  # 5 not 12
+    raw_mems = search_memory(user_id, req.message, 5)
     print(f"DEBUG SEARCH: {len(raw_mems)} hits")
 
     clean = []
@@ -529,18 +529,14 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         c = c.replace("\x00","").strip()
         if not c: 
             continue
-        # Clean File: prefix properly
         if c.startswith("File:"):
-            # File: filename content -> remove File: filename
             parts = c.split(" ", 2)
             if len(parts) == 3:
                 c = parts[2]
-        # Trim each chunk
         if len(c) > 700:
             c = c[:700]
         clean.append(c)
 
-    # Total context max 3000 chars - prevents truncation
     context = "\n\n---\n\n".join(clean)[:3000]
     user_msg = req.message.replace("\x00","")[:1500]
 
@@ -551,8 +547,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
             {"role":"system","content": system[:4000]},
             {"role":"user","content": user_msg}
         ], 
-        max_tokens=1200,  # 1200 not 600 - FIXES CUT
-        temperature=0.4
+        max_tokens=1200
     )
     reply = res.choices[0].message.content
 
