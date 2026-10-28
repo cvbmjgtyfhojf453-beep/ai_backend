@@ -40,6 +40,7 @@ import time
 from collections import defaultdict
 from io import BytesIO
 import fitz  # PyMuPDF
+import re
 
 load_dotenv()
 
@@ -512,6 +513,18 @@ def health():
     return {"status": "ok"}
 
 
+
+def clean_keep_bold(txt: str):
+    # **text** -> <b>text</b>
+    txt = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', txt)
+    txt = re.sub(r'__(.*?)__', r'<b>\1</b>', txt)
+    # remove remaining markdown
+    txt = re.sub(r'\*+', '', txt)
+    txt = re.sub(r'#+', '', txt)
+    txt = re.sub(r'`+', '', txt)
+    return txt.strip()
+
+
 # Chat
 
 last_summary_update = defaultdict(float)
@@ -530,7 +543,6 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         if not c: 
             continue
         if c.startswith("File:"):
-            # FIX: handles filenames with spaces like "My Resume.pdf"
             first_space = c.find(" ")
             second_space = c.find(" ", first_space+1) if first_space != -1 else -1
             if second_space != -1:
@@ -552,6 +564,9 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         max_tokens=1200
     )
     reply = res.choices[0].message.content
+
+    # >>> OPTION 2: KEEP BOLD AS <b> NO ASTERISKS <<<
+    reply = clean_keep_bold(reply)
 
     try:
         save_memory(user_id, f"User: {user_msg[:300]}\nAI: {reply[:300]}", "conversation", 0.7, privacy=True)
