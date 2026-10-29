@@ -521,6 +521,24 @@ def clean_keep_bold(txt: str):
     return txt.strip()
 
 
+
+
+def generate_image_url(prompt: str) -> str:
+    # FREE - no API key needed (Pollinations)
+    # You can later switch to OpenAI DALL-E
+    encoded = requests.utils.quote(prompt)
+    return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
+
+@app.post("/generate-image")
+async def generate_image(request: dict):
+    prompt = request.get("prompt", "")
+    if not prompt:
+        return {"error": "no prompt"}
+    
+    image_url = generate_image_url(prompt)
+    return {"image_url": image_url, "prompt": prompt}
+
+
 # Chat
 
 last_summary_update = defaultdict(float)
@@ -529,6 +547,22 @@ last_summary_update = defaultdict(float)
 @limiter.limit("20/minute")
 async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
     print(f"CHAT USER_ID: {user_id}")
+    
+    # === IMAGE GENERATION ===
+    user_text_lower = req.message.lower()
+    image_keywords = ["generate image", "create image", "draw ", "make image", "generate a image", "create a picture"]
+    if any(k in user_text_lower for k in image_keywords):
+        import urllib.parse
+        prompt = req.message
+        for kw in image_keywords:
+            prompt = prompt.replace(kw, "").strip()
+        if not prompt:
+            prompt = req.message
+        encoded = urllib.parse.quote(prompt)
+        image_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={int(time.time())}"
+        reply = f"<b>Generated:</b> {prompt}\n\nIMAGE::{image_url}"
+        return {"reply": reply}
+    
     raw_mems = search_memory(user_id, req.message, 5)
     print(f"DEBUG SEARCH: {len(raw_mems)} hits")
 
@@ -560,8 +594,6 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         max_tokens=1200
     )
     reply = res.choices[0].message.content
-
-    # >>> OPTION 2: KEEP BOLD AS <b> NO ASTERISKS <<<
     reply = clean_keep_bold(reply)
 
     try:
