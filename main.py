@@ -515,9 +515,19 @@ def health():
 
 
 def clean_keep_bold(txt: str):
+<<<<<<< HEAD
     txt = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', txt, flags=re.DOTALL)
     txt = re.sub(r'__(.*?)__', r'<b>\1</b>', txt, flags=re.DOTALL)
     txt = txt.replace('**', '').replace('__', '')
+=======
+    # **text** -> <b>text</b>
+    txt = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', txt)
+    txt = re.sub(r'__(.*?)__', r'<b>\1</b>', txt)
+    # remove remaining markdown
+    txt = re.sub(r'\*+', '', txt)
+    txt = re.sub(r'#+', '', txt)
+    txt = re.sub(r'`+', '', txt)
+>>>>>>> fccc9bd83830dd1f0991029994ec23e149814656
     return txt.strip()
 
 
