@@ -41,6 +41,7 @@ from collections import defaultdict
 from io import BytesIO
 import fitz  # PyMuPDF
 import re
+import urllib.parse
 
 load_dotenv()
 
@@ -517,30 +518,25 @@ def health():
 def clean_keep_bold(txt: str):
     txt = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', txt, flags=re.DOTALL)
     txt = re.sub(r'__(.*?)__', r'<b>\1</b>', txt, flags=re.DOTALL)
+    txt = re.sub(r'^#{3,}\s*(.+)$', r'<b>\1</b>', txt, flags=re.MULTILINE)
+    txt = re.sub(r'^#{1,2}\s*(.+)$', r'<b>\1</b>', txt, flags=re.MULTILINE)
+    txt = re.sub(r'`{1,3}', '', txt)
     txt = txt.replace('**', '').replace('__', '')
     return txt.strip()
 
-
-
-
 def generate_image_url(prompt: str) -> str:
-    # FREE - no API key needed (Pollinations)
-    # You can later switch to OpenAI DALL-E
-    encoded = requests.utils.quote(prompt)
-    return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
+    encoded = urllib.parse.quote(prompt)
+    return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={int(time.time())}"
 
 @app.post("/generate-image")
 async def generate_image(request: dict):
     prompt = request.get("prompt", "")
     if not prompt:
         return {"error": "no prompt"}
-    
     image_url = generate_image_url(prompt)
     return {"image_url": image_url, "prompt": prompt}
 
-
 # Chat
-
 last_summary_update = defaultdict(float)
 
 @app.post("/chat")
@@ -548,18 +544,21 @@ last_summary_update = defaultdict(float)
 async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
     print(f"CHAT USER_ID: {user_id}")
     
-    # === IMAGE GENERATION ===
-    user_text_lower = req.message.lower()
+    # === IMAGE GENERATION - MUST BE FIRST ===
+    lower = req.message.lower()
     image_keywords = ["generate image", "create image", "draw ", "make image", "generate a image", "create a picture"]
-    if any(k in user_text_lower for k in image_keywords):
-        import urllib.parse
+    if any(k in lower for k in image_keywords):
         prompt = req.message
-        for kw in image_keywords:
-            prompt = prompt.replace(kw, "").strip()
-        if not prompt:
+        # case-insensitive removal
+        for kw in sorted(image_keywords, key=len, reverse=True):
+            if kw in lower:
+                idx = lower.find(kw)
+                prompt = req.message[idx+len(kw):].strip()
+                break
+        if len(prompt) < 3:
             prompt = req.message
-        encoded = urllib.parse.quote(prompt)
-        image_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={int(time.time())}"
+        
+        image_url = generate_image_url(prompt)
         reply = f"<b>Generated:</b> {prompt}\n\nIMAGE::{image_url}"
         return {"reply": reply}
     
@@ -583,7 +582,6 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
 
     context = "\n\n---\n\n".join(clean)[:3000]
     user_msg = req.message.replace("\x00","")[:1500]
-
     system = f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. Use DOCUMENTS to answer if relevant, otherwise chat normally.\n\nDOCUMENTS:\n{context}"
 
     res = groq_chat(
