@@ -518,8 +518,7 @@ def health():
 def clean_keep_bold(txt: str):
     txt = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', txt, flags=re.DOTALL)
     txt = re.sub(r'__(.*?)__', r'<b>\1</b>', txt, flags=re.DOTALL)
-    txt = re.sub(r'^#{3,}\s*(.+)$', r'<b>\1</b>', txt, flags=re.MULTILINE)
-    txt = re.sub(r'^#{1,2}\s*(.+)$', r'<b>\1</b>', txt, flags=re.MULTILINE)
+    txt = re.sub(r'^#{1,3}\s*(.+)$', r'<b>\1</b>', txt, flags=re.MULTILINE)
     txt = re.sub(r'`{1,3}', '', txt)
     txt = txt.replace('**', '').replace('__', '')
     return txt.strip()
