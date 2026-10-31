@@ -745,22 +745,41 @@ async def summarize_full(request: Request, file: UploadFile, user_id: str = Depe
 
 @app.post("/vision")
 async def vision(image: UploadFile, user_id: str = Depends(get_user)):
+    # upload to cloudinary to get URL
     upload_res = cloudinary.uploader.upload(image.file)
     image_url = upload_res['secure_url']
 
+    # Use REAL vision model
     res = client.chat.completions.create(
-        model="qwen/qwen2.5-vl-32b-instruct", # REAL vision model
+        model="qwen/qwen3.8-27b",
         messages=[{
             "role":"user",
             "content": [
-                {"type":"text","text":"Describe this image in detail, be concise, no ###, use ** for bold."},
+                {"type":"text","text":"Describe this image in detail and answer what the user might want to know."},
                 {"type":"image_url","image_url":{"url": image_url}}
             ]
         }]
     )
     description = res.choices[0].message.content
-    description = clean_keep_bold(description) # FIX: removes ###
-    
+    save_memory(user_id, f"Image: {description}", "vision")
+    return {"reply": description, "description": description, "image_url": image_url}@app.post("/vision")
+async def vision(image: UploadFile, user_id: str = Depends(get_user)):
+    # upload to cloudinary to get URL
+    upload_res = cloudinary.uploader.upload(image.file)
+    image_url = upload_res['secure_url']
+
+    # Use REAL vision model
+    res = client.chat.completions.create(
+        model="qwen/qwen3.8-27b",
+        messages=[{
+            "role":"user",
+            "content": [
+                {"type":"text","text":"Describe this image in detail and answer what the user might want to know."},
+                {"type":"image_url","image_url":{"url": image_url}}
+            ]
+        }]
+    )
+    description = res.choices[0].message.content
     save_memory(user_id, f"Image: {description}", "vision")
     return {"reply": description, "description": description, "image_url": image_url}
 
