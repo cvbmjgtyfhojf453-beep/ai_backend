@@ -755,7 +755,7 @@ async def vision(image: UploadFile, user_id: str = Depends(get_user)):
             messages=[{
                 "role":"user",
                 "content": [
-                    {"type":"text","text":"Describe this image in detail, be concise, no ###, use ** for bold."},
+                    {"type":"text","text":"Describe this image in detail, be concise, explain broad use ### for bold, use ** for bold."},
                     {"type":"image_url","image_url":{"url": image_url}}
                 ]
             }]
