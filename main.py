@@ -41,7 +41,7 @@ from collections import defaultdict
 from io import BytesIO
 import fitz  # PyMuPDF
 import re
-import urllib.parse
+import urllib.parse, random
 
 load_dotenv()
 
@@ -755,7 +755,7 @@ async def vision(image: UploadFile, user_id: str = Depends(get_user)):
             messages=[{
                 "role":"user",
                 "content": [
-                    {"type":"text","text":"Describe this image in detail, be concise, explain broad use ### for bold, use ** for bold."},
+                    {"type":"text","text":"Describe this image in detail, be concise, explain broad use ### for bold, use ** for bold, add emojis to your answer."},
                     {"type":"image_url","image_url":{"url": image_url}}
                 ]
             }]
