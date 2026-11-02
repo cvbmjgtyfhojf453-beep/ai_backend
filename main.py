@@ -523,9 +523,11 @@ def clean_keep_bold(txt: str):
     txt = txt.replace('**', '').replace('__', '')
     return txt.strip()
 
+
 def generate_image_url(prompt: str) -> str:
     encoded = urllib.parse.quote(prompt)
-    return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={int(time.time())}"
+    # FAST VERSION - 512 + turbo model
+    return f"https://image.pollinations.ai/prompt/{encoded}?width=512&height=512&model=turbo&nologo=true&seed={int(time.time())}"
 
 @app.post("/generate-image")
 async def generate_image(request: dict):
