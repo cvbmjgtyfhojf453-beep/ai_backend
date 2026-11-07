@@ -64,8 +64,8 @@ POLLINATIONS_KEY = os.getenv("POLLINATIONS_KEY", "")
 
 def generate_video_url(prompt: str) -> str:
     encoded = urllib.parse.quote(prompt.strip()[:200])
-    # seedance = cheap + fast for testing, veo = best quality (more Pollen)
-    return f"https://gen.pollinations.ai/image/{encoded}?model=seedance&width=1280&height=720&nologo=true&key={POLLINATIONS_KEY}"
+    # FIX: /video/ NOT /image/, and use aspectRatio + duration
+    return f"https://gen.pollinations.ai/video/{encoded}?model=seedance&duration=5&aspectRatio=16:9&nologo=true&key={POLLINATIONS_KEY}"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30 # 30 day
 # oauth2 = OAuth2PasswordBearer(tokenUrl="token")
@@ -558,9 +558,30 @@ async def generate_video(request: dict, user_id: str = Depends(get_user)):
     if not prompt:
         return {"error": "no prompt"}
     if not POLLINATIONS_KEY:
-        return {"error": "POLLINATIONS_KEY not set in Render"}
-    video_url = generate_video_url(prompt)
-    return {"video_url": video_url, "prompt": prompt}
+        return {"error": "POLLINATIONS_KEY not set in Render - check env var name"}
+
+    try:
+        video_url = generate_video_url(prompt)
+        print(f"Fetching video: {video_url[:120]}")
+
+        # Download from Pollinations in backend, not in Android
+        r = httpx.get(video_url, timeout=180.0)
+        print(f"Pollinations status: {r.status_code} type: {r.headers.get('content-type')} len: {len(r.content)}")
+
+        if r.status_code != 200:
+            return {"error": f"Pollinations failed {r.status_code}: {r.text[:500]}"}
+
+        # Upload to Cloudinary as video
+        up = cloudinary.uploader.upload(
+            io.BytesIO(r.content),
+            resource_type="video",
+            folder="obanor_videos"
+        )
+        return {"video_url": up["secure_url"], "prompt": prompt}
+
+    except Exception as e:
+        traceback.print_exc()
+        return {"error": str(e) or "Unknown backend error"}
 
 
 # Chat
@@ -570,10 +591,10 @@ last_summary_update = defaultdict(float)
 @limiter.limit("20/minute")
 async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
     print(f"CHAT USER_ID: {user_id}")
-    
+
     lower = req.message.lower()
 
-    # === VIDEO GENERATION - MUST BE FIRST (before image) ===
+    # === VIDEO GENERATION - MUST BE FIRST ===
     video_keywords = ["generate video", "create video", "make video", "make a video", "/video"]
     if any(k in lower for k in video_keywords):
         prompt = req.message
@@ -586,15 +607,31 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
             prompt = "cool video"
         if not POLLINATIONS_KEY:
             return {"reply": "Video key not set in Render. Add POLLINATIONS_KEY in Environment."}
-        video_url = generate_video_url(prompt)
-        reply = f"<b>Generating real video for:</b> {prompt}... Please wait 30-60 seconds.\n\nVIDEO::{video_url}"
-        return {"reply": reply}
-    
+
+        try:
+            video_url = generate_video_url(prompt)
+            print(f"Fetching video: {video_url[:120]}")
+            r = httpx.get(video_url, timeout=180.0)
+            print(f"Pollinations status: {r.status_code} len: {len(r.content)}")
+            if r.status_code != 200:
+                return {"reply": f"Video generation failed: {r.status_code} - try again"}
+
+            up = cloudinary.uploader.upload(
+                io.BytesIO(r.content),
+                resource_type="video",
+                folder="obanor_videos"
+            )
+            cloud_url = up["secure_url"]
+            reply = f"<b>Video ready:</b> {prompt}\n\nVIDEO::{cloud_url}"
+            return {"reply": reply}
+        except Exception as e:
+            traceback.print_exc()
+            return {"reply": f"Video error: {str(e)}"}
+
     # === IMAGE GENERATION ===
     image_keywords = ["generate image", "create image", "draw ", "make image", "generate a image", "create a picture"]
     if any(k in lower for k in image_keywords):
         prompt = req.message
-        # case-insensitive removal
         for kw in sorted(image_keywords, key=len, reverse=True):
             if kw in lower:
                 idx = lower.find(kw)
@@ -602,11 +639,11 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
                 break
         if len(prompt) < 3:
             prompt = req.message
-        
+
         image_url = generate_image_url(prompt)
         reply = f"<b>Generated:</b> {prompt}\n\nIMAGE::{image_url}"
         return {"reply": reply}
-    
+
     raw_mems = search_memory(user_id, req.message, 5)
     print(f"DEBUG SEARCH: {len(raw_mems)} hits")
 
@@ -614,7 +651,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
     for m in raw_mems:
         c = m.get('content','') if isinstance(m, dict) else getattr(m,'content','') or str(m)
         c = c.replace("\x00","").strip()
-        if not c: 
+        if not c:
             continue
         if c.startswith("File:"):
             first_space = c.find(" ")
@@ -629,16 +666,14 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
     user_msg = req.message.replace("\x00","")[:1500]
     system = f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. Use DOCUMENTS to answer if relevant, otherwise chat normally. Always finish your answer completely, do not stop mid-sentence.\n\nDOCUMENTS:\n{context}"
 
-    # FIX FOR CUTOFF: was 1200, now 3000 + no truncation of reply
     res = groq_chat(
         messages=[
             {"role":"system","content": system[:4000]},
             {"role":"user","content": user_msg}
-        ], 
+        ],
         max_tokens=3000
     )
     reply = res.choices[0].message.content
-    # If Groq still cut it off (finish_reason == length), tell user to say continue
     if res.choices[0].finish_reason == "length":
         reply += "\n\n...[Reply was long, type 'continue' to get the rest]"
 
@@ -646,7 +681,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
 
     try:
         save_memory(user_id, f"User: {user_msg[:300]}\nAI: {reply[:300]}", "conversation", 0.7, privacy=True)
-    except: 
+    except:
         pass
 
     now = time.time()
