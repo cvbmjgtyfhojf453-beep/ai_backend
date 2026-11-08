@@ -64,7 +64,7 @@ POLLINATIONS_KEY = os.getenv("POLLINATIONS_KEY", "")
 
 def generate_video_url(prompt: str) -> str:
     encoded = urllib.parse.quote(prompt.strip()[:200])
-    return f"https://gen.pollinations.ai/image/{encoded}?model=seedance&duration=5&key={POLLINATIONS_KEY}"
+    return f"https://gen.pollinations.ai/image/{encoded}?model=veo&duration=6&key={POLLINATIONS_KEY}"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30 # 30 day
 # oauth2 = OAuth2PasswordBearer(tokenUrl="token")
