@@ -64,8 +64,7 @@ POLLINATIONS_KEY = os.getenv("POLLINATIONS_KEY", "")
 
 def generate_video_url(prompt: str) -> str:
     encoded = urllib.parse.quote(prompt.strip()[:200])
-    # FIX: /video/ NOT /image/, and use aspectRatio + duration
-    return f"https://gen.pollinations.ai/video/{encoded}?model=seedance&duration=5&aspectRatio=16:9&nologo=true&key={POLLINATIONS_KEY}"
+    return f"https://gen.pollinations.ai/image/{encoded}?model=seedance&duration=5&key={POLLINATIONS_KEY}"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30 # 30 day
 # oauth2 = OAuth2PasswordBearer(tokenUrl="token")
@@ -614,7 +613,8 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
             r = httpx.get(video_url, timeout=180.0)
             print(f"Pollinations status: {r.status_code} len: {len(r.content)}")
             if r.status_code != 200:
-                return {"reply": f"Video generation failed: {r.status_code} - try again"}
+                print(f"Pollinations ERROR BODY: {r.text[:500]}")
+                return {"reply": f"Video generation failed: {r.status_code} - {r.text[:200]}"}
 
             up = cloudinary.uploader.upload(
                 io.BytesIO(r.content),
