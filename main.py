@@ -69,7 +69,7 @@ BLOCKED_WORDS = [
     "sex", "sexy", "s3x", "porn", "p0rn", "pornhub", "onlyfans", "erotic",
     "nsfw", "xxx", "pornographic", "topless", "bottomless", "bikini",
     "lingerie", "breast", "boob", "boobs", "tits", "penis", "dick", "cock",
-    "vagina", "pussy", "genital", "genitals", "orgasm", "kissing", "make out",
+    "vagina", "pussy", "pusy", "pussi", "pusi", "genital", "genitals", "orgasm", "kissing", "make out",
     "making love", "bedroom scene", "oral sex", "anal", "masturbate",
     "masturbation", "seduce", "seductive", "horny", "threesome", "fetish",
     "bdsm", "strip club", "escort", "prostitute", "sex tape", "nude photo",
