@@ -61,6 +61,24 @@ client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 SECRET_KEY = os.getenv("SECRET_KEY", "secretkeyokay")
 # ===== VIDEO - Pollinations REAL, Video-only key =====
 POLLINATIONS_KEY = os.getenv("POLLINATIONS_KEY", "")
+# ===== PROMPT FILTER =====
+BLOCKED_WORDS = [
+    "nude", "naked", "undress", "undressed", "strip", "sex", "sexy",
+    "porn", "erotic", "nsfw", "topless", "bottomless", "bikini",
+    "lingerie", "breast", "boob", "penis", "vagina", "genital",
+    "orgasm", "kissing", "making love", "bedroom scene", "onlyfans",
+    "child", "kid", "baby", "minor", "teen", "schoolgirl",
+    "schoolboy", "underage", "young girl", "young boy",
+    "celebrity", "real person", "deepfake",
+    "kill", "murder", "blood", "gore", "torture", "behead", "suicide"
+]
+
+def is_blocked(prompt: str):
+    lower = prompt.lower()
+    for word in BLOCKED_WORDS:
+        if word in lower:
+            return word
+    return None
 
 def generate_video_url(prompt: str) -> str:
     encoded = urllib.parse.quote(prompt.strip()[:200])
@@ -542,10 +560,16 @@ def generate_image_url(prompt: str) -> str:
     return f"https://image.pollinations.ai/prompt/{encoded}?width=512&height=512&nologo=true&seed={int(time.time())}"
 
 @app.post("/generate-image")
-async def generate_image(request: dict):
+async def generate_image(request: dict, user_id: str = Depends(get_user)):
     prompt = request.get("prompt", "")
     if not prompt:
         return {"error": "no prompt"}
+
+    # === FILTER ===
+    blocked = is_blocked(prompt)
+    if blocked:
+        return {"error": "This prompt is not allowed. Please try a different prompt."}
+
     image_url = generate_image_url(prompt)
     return {"image_url": image_url, "prompt": prompt}
 
@@ -556,6 +580,12 @@ async def generate_video(request: dict, user_id: str = Depends(get_user)):
     prompt = request.get("prompt", "").strip()
     if not prompt:
         return {"error": "no prompt"}
+
+    # === FILTER - MUST BE BEFORE POLLINATIONS ===
+    blocked = is_blocked(prompt)
+    if blocked:
+        return {"error": "This prompt is not allowed. Please try a different prompt."}
+
     if not POLLINATIONS_KEY:
         return {"error": "POLLINATIONS_KEY not set in Render - check env var name"}
 
@@ -604,6 +634,12 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
                 break
         if len(prompt) < 3:
             prompt = "cool video"
+
+        # === FILTER ===
+        blocked = is_blocked(prompt)
+        if blocked:
+            return {"reply": "This prompt is not allowed. Please try a different prompt."}
+
         if not POLLINATIONS_KEY:
             return {"reply": "Video key not set in Render. Add POLLINATIONS_KEY in Environment."}
 
@@ -639,6 +675,11 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
                 break
         if len(prompt) < 3:
             prompt = req.message
+
+        # === FILTER ===
+        blocked = is_blocked(prompt)
+        if blocked:
+            return {"reply": "This prompt is not allowed. Please try a different prompt."}
 
         image_url = generate_image_url(prompt)
         reply = f"<b>Generated:</b> {prompt}\n\nIMAGE::{image_url}"
