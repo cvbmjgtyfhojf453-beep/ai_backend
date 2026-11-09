@@ -61,23 +61,75 @@ client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 SECRET_KEY = os.getenv("SECRET_KEY", "secretkeyokay")
 # ===== VIDEO - Pollinations REAL, Video-only key =====
 POLLINATIONS_KEY = os.getenv("POLLINATIONS_KEY", "")
-# ===== PROMPT FILTER =====
+
+# ===== PROMPT FILTER - STRICT + BYPASS-PROOF =====
 BLOCKED_WORDS = [
-    "nude", "naked", "undress", "undressed", "strip", "sex", "sexy",
-    "porn", "erotic", "nsfw", "topless", "bottomless", "bikini",
-    "lingerie", "breast", "boob", "penis", "vagina", "genital",
-    "orgasm", "kissing", "making love", "bedroom scene", "onlyfans",
-    "child", "kid", "baby", "minor", "teen", "schoolgirl",
-    "schoolboy", "underage", "young girl", "young boy",
-    "celebrity", "real person", "deepfake",
-    "kill", "murder", "blood", "gore", "torture", "behead", "suicide"
+    # --- Sexual / Nudity ---
+    "nude", "nudes", "n00d", "naked", "undress", "undressed", "strip", "stripper",
+    "sex", "sexy", "s3x", "porn", "p0rn", "pornhub", "onlyfans", "erotic",
+    "nsfw", "xxx", "pornographic", "topless", "bottomless", "bikini",
+    "lingerie", "breast", "boob", "boobs", "tits", "penis", "dick", "cock",
+    "vagina", "pussy", "genital", "genitals", "orgasm", "kissing", "make out",
+    "making love", "bedroom scene", "oral sex", "anal", "masturbate",
+    "masturbation", "seduce", "seductive", "horny", "threesome", "fetish",
+    "bdsm", "strip club", "escort", "prostitute", "sex tape", "nude photo",
+    "nude pic", "without clothes", "no clothes", "in bed naked", "shower",
+    "bath naked", "spicy pic", "spicy photo", "leak", "leaked", "leaked nudes",
+    "take her clothes off", "take off clothes", "remove clothes",
+    "what is under", "under her dress", "under skirt", "upskirt",
+    "see through", "wet t-shirt", "hot girl", "hot woman", "sexy girl",
+    "sexy woman", "sexy lady", "big ass", "big boobs",
+
+    # --- Minors / Age - ZERO TOLERANCE ---
+    "child", "ch1ld", "kid", "kids", "baby", "minor", "teen", "teenager",
+    "teens", "schoolgirl", "schoolboy", "underage", "young girl", "young boy",
+    "young teen", "little girl", "little boy", "toddler", "infant",
+    "preschool", "high school girl", "high school boy", "child porn", "cp",
+    "jailbait", "lolita", "minor girl", "minor boy", "13 year", "14 year",
+    "15 year", "16 year", "17 year", "under 18", "small girl", "small boy",
+
+    # --- Real Person / Deepfake / Celebrity ---
+    "celebrity", "real person", "deepfake", "face swap", "famous person",
+    "taylor swift", "kylie jenner", "kim kardashian", "ariana grande",
+    "billie eilish", "selena gomez", "olivia rodrigo", "zendaya",
+    "make her look", "put her face", "swap face",
+
+    # --- Violence / Gore / Death ---
+    "kill", "murder", "blood", "bloody", "gore", "gory", "torture",
+    "behead", "beheading", "suicide", "kill myself", "self harm",
+    "cutting", "shooting", "stabbing", "bomb", "explosion", "terrorist",
+    "massacre", "dead body", "corpse", "violent", "fight to death",
+    "hanging", "drowning", "burn alive", "cut throat",
+
+    # --- Hate / Harassment ---
+    "racial slur", "hate crime", "lynch", "kill black", "kill white",
+    "hate jews", "hate muslim",
+
+    # --- Drugs / Weapons (for image/video) ---
+    "cocaine", "heroin", "meth", "weed smoking", "smoking weed",
+    "gun", "rifle", "pistol", "weapon", "knife attack", "shoot someone",
+    "make a bomb", "how to kill",
 ]
 
 def is_blocked(prompt: str):
-    lower = prompt.lower()
+    if not prompt:
+        return None
+
+    # --- 1. Normalize to catch bypass tricks ---
+    # n.u.d.e -> nude, n u d e -> nude, n00ds -> nudes, s3x -> sex
+    clean = prompt.lower()
+    clean = clean.replace(".", "").replace("-", "").replace("_", "").replace(" ", "")
+    clean = clean.replace("0", "o").replace("1", "i").replace("3", "e")
+    clean = clean.replace("4", "a").replace("5", "s").replace("@", "a")
+    clean = clean.replace("$", "s").replace("!", "i")
+
+    # --- 2. Check against list ---
     for word in BLOCKED_WORDS:
-        if word in lower:
+        word_clean = word.lower().replace(" ", "").replace(".", "")
+        word_clean = word_clean.replace("0", "o").replace("1", "i").replace("3", "e")
+        if word_clean and word_clean in clean:
             return word
+
     return None
 
 def generate_video_url(prompt: str) -> str:
