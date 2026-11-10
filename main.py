@@ -69,9 +69,9 @@ BLOCKED_WORDS = [
     "sex", "sexy", "s3x", "porn", "p0rn", "pornhub", "onlyfans", "erotic",
     "nsfw", "xxx", "pornographic", "topless", "bottomless", "bikini",
     "lingerie", "breast", "boob", "boobs", "tits", "penis", "dick", "cock",
-    "vagina", "pussy", "pusy", "pussi", "pusi", "genital", "genitals", "orgasm", "kissing", "make out",
+    "vagina", "pussy", "pusy", "pussi", "pusi", "p*ssy", "p*sy", "genital", "genitals", "orgasm", "kissing", "make out",
     "making love", "bedroom scene", "oral sex", "anal", "masturbate",
-    "masturbation", "seduce", "seductive", "horny", "threesome", "fetish",
+    "masturbation", "seduce", "seductive", "horny", "p*si", "threesome", "fetish",
     "bdsm", "strip club", "escort", "prostitute", "sex tape", "nude photo",
     "nude pic", "without clothes", "no clothes", "in bed naked", "shower",
     "bath naked", "spicy pic", "spicy photo", "leak", "leaked", "leaked nudes",
@@ -115,22 +115,44 @@ def is_blocked(prompt: str):
     if not prompt:
         return None
 
-    # --- 1. Normalize to catch bypass tricks ---
-    # n.u.d.e -> nude, n u d e -> nude, n00ds -> nudes, s3x -> sex
-    clean = prompt.lower()
-    clean = clean.replace(".", "").replace("-", "").replace("_", "").replace(" ", "")
-    clean = clean.replace("0", "o").replace("1", "i").replace("3", "e")
-    clean = clean.replace("4", "a").replace("5", "s").replace("@", "a")
-    clean = clean.replace("$", "s").replace("!", "i")
+    # Make 2 versions: @ -> u AND @ -> a, so p@ssy and b@d both get caught
+    def normalize(s: str):
+        s = s.lower()
+        s = s.replace(".", "").replace("-", "").replace("_", "").replace(" ", "")
+        s = s.replace("*", "").replace("$", "s").replace("!", "i")
+        s = s.replace("0", "o").replace("1", "i").replace("3", "e")
+        s = s.replace("4", "a").replace("5", "s")
+        return s
 
-    # --- 2. Check against list ---
+    clean_u = normalize(prompt).replace("@", "u")
+    clean_a = normalize(prompt).replace("@", "a")
+    clean_naked = normalize(prompt).replace("@", "")
+
     for word in BLOCKED_WORDS:
-        word_clean = word.lower().replace(" ", "").replace(".", "")
-        word_clean = word_clean.replace("0", "o").replace("1", "i").replace("3", "e")
-        if word_clean and word_clean in clean:
+        word_clean = normalize(word)
+        if word_clean and (word_clean in clean_u or word_clean in clean_a or word_clean in clean_naked):
             return word
-
     return None
+
+# ===== WEB SEARCH - for Groq =====
+def web_search_tool(query: str):
+    try:
+        res = requests.post(
+            "https://api.tavily.com/search",
+            json={"api_key": os.getenv("TAVILY_API_KEY") or os.getenv("TAVILY_KEY"),
+                  "query": query, "max_results": 5, "include_answer": True},
+            timeout=15
+        )
+        data = res.json()
+        out = ""
+        if data.get("answer"):
+            out += f"ANSWER: {data['answer']}\n\n"
+        for r in data.get("results", []):
+            out += f"- {r['title']}: {r.get('content','')[:800]}\nURL: {r['url']}\n"
+        return out or "No results"
+    except Exception as e:
+        return f"Search failed: {e}"
+
 
 def generate_video_url(prompt: str) -> str:
     encoded = urllib.parse.quote(prompt.strip()[:200])
@@ -737,6 +759,28 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         reply = f"<b>Generated:</b> {prompt}\n\nIMAGE::{image_url}"
         return {"reply": reply}
 
+    # === AUTO WEB SEARCH ===
+    search_triggers = [
+        "what is", "who is", "when is", "where is", "how much", "price",
+        "news", "today", "current", "latest", "score", "weather",
+        "2025", "2026", "search", "find", "trending", "happening",
+        "bitcoin", "crypto", "stock", "election", "football", "naira", "dollar"
+    ]
+    needs_search = any(k in lower for k in search_triggers)
+    # Also search if user explicitly asks
+    if lower.startswith("search ") or lower.startswith("google "):
+        needs_search = True
+
+    web_context = ""
+    if needs_search:
+        try:
+            web_context = web_search_tool(req.message)
+            print(f"WEB SEARCH USED: {req.message[:80]} -> {len(web_context)} chars")
+        except Exception as e:
+            print(f"WEB SEARCH FAILED: {e}")
+            web_context = ""
+
+    # === MEMORY ===
     raw_mems = search_memory(user_id, req.message, 5)
     print(f"DEBUG SEARCH: {len(raw_mems)} hits")
 
@@ -757,7 +801,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
 
     context = "\n\n---\n\n".join(clean)[:3000]
     user_msg = req.message.replace("\x00","")[:1500]
-    system = f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. Use DOCUMENTS to answer if relevant, otherwise chat normally. Always finish your answer completely, do not stop mid-sentence.\n\nDOCUMENTS:\n{context}"
+    system = f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. Use DOCUMENTS and WEB RESULTS to answer if relevant, otherwise chat normally. If WEB RESULTS are present, use them for current facts and mention the source. Always finish your answer completely, do not stop mid-sentence.\n\nDOCUMENTS:\n{context}\n\nWEB RESULTS:\n{web_context[:3000]}"
 
     res = groq_chat(
         messages=[
@@ -1002,9 +1046,10 @@ def email_summary(user_id: str = Depends(get_user)):
     # Wire Gmail API here
     return {"summary": "3 unread. 1 from Tolu about deadline"}
 
-@app.post("/search") #33
+
+@app.post("/search")
 def web_search(query: str):
-    return requests.post("https://api.tavily.com/search", json={"api_key":os.getenv("TAVILY_KEY"),"query":query}).json()
+    return {"results": web_search_tool(query)}
 
 #@app.post("/browser/book") #37
 #def browser_book(url: str, action: str):
@@ -1031,7 +1076,7 @@ def analytics(user_id: str = Depends(get_user)):
     conn = psycopg2.connect(DATABASE_URL)
     register_vector(conn)
     with conn.cursor() as cur:
-        cur.execute("SELECT category, COUNT(*) FROM memories WHERE user_id=%s GROUP BY category", (str(user_id,)));
+        cur.execute("SELECT category, COUNT(*) FROM memories WHERE user_id=%s GROUP BY category", (str(user_id),))
         result = cur.fetchall()
     conn.close()
     return {"topics": result}
