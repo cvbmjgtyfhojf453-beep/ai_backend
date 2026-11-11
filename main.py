@@ -698,7 +698,24 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
     lower = req.message.lower()
 
     # === VIDEO GENERATION - MUST BE FIRST ===
-    video_keywords = ["generate video", "create video", "make video", "make a video", "/video"]
+    video_keywords = [
+        # Basic
+        "generate video", "generate a video", "create video", "create a video",
+        "make video", "make a video", "make me a video", "make me video",
+        "create a clip", "make a clip", "generate a clip",
+        "video of", "a video of", "clip of",
+        "/video",
+        # Polite / natural
+        "can you make a video", "can you create a video", "can you generate a video",
+        "please make a video", "please create a video", "please generate a video",
+        "i want a video", "i need a video", "give me a video", "make me a clip",
+        # Animation / film words
+        "animate", "make an animation", "create an animation", "generate an animation",
+        "make a short video", "create a short video", "make a film", "film of",
+        "make a movie", "create a movie",
+        # Extra
+        "video please", "make video of", "create video of", "generate video of"
+    ]
     if any(k in lower for k in video_keywords):
         prompt = req.message
         for kw in sorted(video_keywords, key=len, reverse=True):
@@ -708,8 +725,11 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
                 break
         if len(prompt) < 3:
             prompt = "cool video"
+        for filler in ["me a ", "me an ", "a ", "an ", "of ", "please "]:
+            if prompt.lower().startswith(filler):
+                prompt = prompt[len(filler):].strip()
+                break
 
-        # === FILTER ===
         blocked = is_blocked(prompt)
         if blocked:
             return {"reply": "This prompt is not allowed. Please try a different prompt."}
@@ -739,7 +759,31 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
             return {"reply": f"Video error: {str(e)}"}
 
     # === IMAGE GENERATION ===
-    image_keywords = ["generate image", "create image", "draw ", "make image", "generate a image", "create a picture"]
+    image_keywords = [
+        # Basic
+        "generate image", "generate a image", "generate an image", "generate a picture", "generate picture",
+        "create image", "create an image", "create a picture", "create a pic", "create picture", "create pic",
+        "make image", "make an image", "make a picture", "make me a picture", "make me an image", "make a pic",
+        "draw ", "draw me", "draw a", "draw an",
+        "picture of", "pic of", "image of", "photo of",
+        "i want a picture", "i want an image", "i want a pic",
+        "give me a picture", "give me an image", "give me a pic",
+        "make me a pic", "create an image",
+        # Polite / natural
+        "can you draw", "can you make an image", "can you create an image", "can you generate an image",
+        "can you make a picture", "can you create a picture", "can you make me a picture",
+        "please draw", "please make an image", "please create an image", "please generate an image",
+        "please make me a picture", "please make a picture",
+        "i need a picture", "i need an image", "i need a pic",
+        # Art words - these catch a lot more
+        "paint ", "paint me", "paint a", "sketch ", "sketch me", "illustrate", "illustration of",
+        "render ", "design ", "make art", "create art", "generate art", "make artwork", "create artwork",
+        "draw a picture", "draw an image", "draw me a picture",
+        # Extra
+        "image please", "picture please", "pic please",
+        "make an image of", "create an image of", "generate an image of",
+        "a picture of", "an image of", "a photo of"
+    ]
     if any(k in lower for k in image_keywords):
         prompt = req.message
         for kw in sorted(image_keywords, key=len, reverse=True):
@@ -749,8 +793,11 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
                 break
         if len(prompt) < 3:
             prompt = req.message
+        for filler in ["me a ", "me an ", "a ", "an ", "of ", "please "]:
+            if prompt.lower().startswith(filler):
+                prompt = prompt[len(filler):].strip()
+                break
 
-        # === FILTER ===
         blocked = is_blocked(prompt)
         if blocked:
             return {"reply": "This prompt is not allowed. Please try a different prompt."}
@@ -767,7 +814,6 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         "bitcoin", "crypto", "stock", "election", "football", "naira", "dollar"
     ]
     needs_search = any(k in lower for k in search_triggers)
-    # Also search if user explicitly asks
     if lower.startswith("search ") or lower.startswith("google "):
         needs_search = True
 
