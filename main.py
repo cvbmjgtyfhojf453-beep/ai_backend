@@ -778,7 +778,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         # Art words - these catch a lot more
         "paint ", "paint me", "paint a", "sketch ", "sketch me", "illustrate", "illustration of",
         "render ", "design ", "make art", "create art", "generate art", "make artwork", "create artwork",
-        "draw a picture", "draw an image", "draw me a picture",
+        "draw a picture", "draw an image", "generate", "draw me a picture",
         # Extra
         "image please", "picture please", "pic please",
         "make an image of", "create an image of", "generate an image of",
