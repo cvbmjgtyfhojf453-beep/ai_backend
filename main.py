@@ -848,9 +848,10 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         f"LONG-TERM MEMORY ABOUT THIS USER (facts, likes, goals - USE THIS):\n{summary_text}\n\n"
         f"RECENT MEMORIES / DOCUMENTS:\n{context}\n\n"
         f"WEB RESULTS:\n{web_context[:3000]}\n\n"
-        f"RULE: Use LONG-TERM MEMORY and RECENT MEMORIES below to answer. If the answer is in there, repeat it. Never say 'I don't remember' or 'I don't know' if it is in the memories. If user asks what they said before, quote the RECENT MEMORIES."
+        f"RULE: Use RECENT MEMORIES below to answer. If the answer is in there, repeat it. Never say 'I don't remember' or 'I don't know' if it is in the memories. If user asks what they said before, quote the RECENT MEMORIES."
         f"If WEB RESULTS are present, use them for current facts and mention the source."
         f"Answer with emoji."
+        f"You can generate images and videos."
     )
 
     res = groq_chat(
