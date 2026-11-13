@@ -78,7 +78,7 @@ BLOCKED_WORDS = [
     "take her clothes off", "take off clothes", "remove clothes",
     "what is under", "under her dress", "under skirt", "upskirt",
     "see through", "wet t-shirt", "hot girl", "hot woman", "sexy girl",
-    "sexy woman", "sexy lady", "big ass", "big boobs", "p*nis", "p#nis",
+    "sexy woman", "sexy lady", "big ass", "big boobs", "p*nis", "p#nis", "d*ck",
 
     # --- Minors / Age - ZERO TOLERANCE ---
     "child", "ch1ld", "kid", "kids", "baby", "minor", "teen", "teenager",
