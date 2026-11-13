@@ -518,7 +518,7 @@ def save_memory(user_id, content, category="general", importance=0.5, emotion=No
         print(f"save_memory skipped: {e}")
         return
 
-def search_memory(user_id, query, limit=5):  # 5 not 20
+def search_memory(user_id, query, limit=8):
     print(f"SEARCH USER_ID: {user_id} query={query[:50]}")
     try:
         emb = embed_text(query, task="retrieval.query")
@@ -531,8 +531,7 @@ def search_memory(user_id, query, limit=5):  # 5 not 20
                 SELECT content, category FROM memories 
                 WHERE user_id=%s 
                 AND (
-                    category = 'document' 
-                    OR privacy_mode IS NULL 
+                    privacy_mode IS NULL 
                     OR privacy_mode = false
                 )
                 ORDER BY embedding <=> %s::vector 
@@ -542,21 +541,25 @@ def search_memory(user_id, query, limit=5):  # 5 not 20
             )
             rows = cur.fetchall()
             print(f"HITS TOTAL: {len(rows)}")
-            docs = [r for r in rows if r.get('category') == 'document' or 'File:' in r.get('content','')[:20]]
-            print(f"DOC HITS: {len(docs)}")
+            docs = [r for r in rows if r.get('category') == 'document']
+            facts = [r for r in rows if r.get('category') == 'fact']
+            convos = [r for r in rows if r.get('category') == 'conversation']
+            print(f"DOC HITS: {len(docs)} | FACT HITS: {len(facts)} | CONVO HITS: {len(convos)}")
 
         conn.close()
         
         # TRIM content to 700 chars max to prevent truncation
         cleaned = []
         for r in rows:
-            c = r['content']
+            c = r['content'] or ""
+            # Keep category so /chat knows what it is
+            cat = r.get('category', 'general')
             # Remove File: prefix to save tokens
             if c.startswith("File:"):
                 c = c.split(" ", 2)[-1] if len(c.split(" ")) > 2 else c
             if len(c) > 700:
                 c = c[:700] + "..."
-            cleaned.append({"content": c})
+            cleaned.append({"content": c, "category": cat})
         
         return cleaned
         
@@ -694,26 +697,20 @@ last_summary_update = defaultdict(float)
 @limiter.limit("20/minute")
 async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
     print(f"CHAT USER_ID: {user_id}")
-
     lower = req.message.lower()
 
     # === VIDEO GENERATION - MUST BE FIRST ===
     video_keywords = [
-        # Basic
         "generate video", "generate a video", "create video", "create a video",
         "make video", "make a video", "make me a video", "make me video",
         "create a clip", "make a clip", "generate a clip",
-        "video of", "a video of", "clip of",
-        "/video",
-        # Polite / natural
+        "video of", "a video of", "clip of", "/video",
         "can you make a video", "can you create a video", "can you generate a video",
         "please make a video", "please create a video", "please generate a video",
         "i want a video", "i need a video", "give me a video", "make me a clip",
-        # Animation / film words
         "animate", "make an animation", "create an animation", "generate an animation",
         "make a short video", "create a short video", "make a film", "film of",
         "make a movie", "create a movie",
-        # Extra
         "video please", "make video of", "create video of", "generate video of"
     ]
     if any(k in lower for k in video_keywords):
@@ -729,38 +726,25 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
             if prompt.lower().startswith(filler):
                 prompt = prompt[len(filler):].strip()
                 break
-
         blocked = is_blocked(prompt)
         if blocked:
             return {"reply": "This prompt is not allowed. Please try a different prompt."}
-
         if not POLLINATIONS_KEY:
             return {"reply": "Video key not set in Render. Add POLLINATIONS_KEY in Environment."}
-
         try:
             video_url = generate_video_url(prompt)
-            print(f"Fetching video: {video_url[:120]}")
             r = httpx.get(video_url, timeout=180.0)
-            print(f"Pollinations status: {r.status_code} len: {len(r.content)}")
             if r.status_code != 200:
-                print(f"Pollinations ERROR BODY: {r.text[:500]}")
                 return {"reply": f"Video generation failed: {r.status_code} - {r.text[:200]}"}
-
-            up = cloudinary.uploader.upload(
-                io.BytesIO(r.content),
-                resource_type="video",
-                folder="obanor_videos"
-            )
+            up = cloudinary.uploader.upload(io.BytesIO(r.content), resource_type="video", folder="obanor_videos")
             cloud_url = up["secure_url"]
-            reply = f"<b>Video ready:</b> {prompt}\n\nVIDEO::{cloud_url}"
-            return {"reply": reply}
+            return {"reply": f"<b>Video ready:</b> {prompt}\n\nVIDEO::{cloud_url}"}
         except Exception as e:
             traceback.print_exc()
             return {"reply": f"Video error: {str(e)}"}
 
     # === IMAGE GENERATION ===
     image_keywords = [
-        # Basic
         "generate image", "generate a image", "generate an image", "generate a picture", "generate picture",
         "create image", "create an image", "create a picture", "create a pic", "create picture", "create pic",
         "make image", "make an image", "make a picture", "make me a picture", "make me an image", "make a pic",
@@ -769,17 +753,14 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         "i want a picture", "i want an image", "i want a pic",
         "give me a picture", "give me an image", "give me a pic",
         "make me a pic", "create an image",
-        # Polite / natural
         "can you draw", "can you make an image", "can you create an image", "can you generate an image",
         "can you make a picture", "can you create a picture", "can you make me a picture",
         "please draw", "please make an image", "please create an image", "please generate an image",
         "please make me a picture", "please make a picture",
         "i need a picture", "i need an image", "i need a pic",
-        # Art words - these catch a lot more
         "paint ", "paint me", "paint a", "sketch ", "sketch me", "illustrate", "illustration of",
         "render ", "design ", "make art", "create art", "generate art", "make artwork", "create artwork",
         "draw a picture", "draw an image", "draw me a picture",
-        # Extra
         "image please", "picture please", "pic please",
         "make an image of", "create an image of", "generate an image of",
         "a picture of", "an image of", "a photo of"
@@ -797,14 +778,11 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
             if prompt.lower().startswith(filler):
                 prompt = prompt[len(filler):].strip()
                 break
-
         blocked = is_blocked(prompt)
         if blocked:
             return {"reply": "This prompt is not allowed. Please try a different prompt."}
-
         image_url = generate_image_url(prompt)
-        reply = f"<b>Generated:</b> {prompt}\n\nIMAGE::{image_url}"
-        return {"reply": reply}
+        return {"reply": f"<b>Generated:</b> {prompt}\n\nIMAGE::{image_url}"}
 
     # === AUTO WEB SEARCH ===
     search_triggers = [
@@ -816,18 +794,28 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
     needs_search = any(k in lower for k in search_triggers)
     if lower.startswith("search ") or lower.startswith("google "):
         needs_search = True
-
     web_context = ""
     if needs_search:
         try:
             web_context = web_search_tool(req.message)
-            print(f"WEB SEARCH USED: {req.message[:80]} -> {len(web_context)} chars")
         except Exception as e:
             print(f"WEB SEARCH FAILED: {e}")
             web_context = ""
 
-    # === MEMORY ===
-    raw_mems = search_memory(user_id, req.message, 5)
+    # === MEMORY - LOAD LONG-TERM SUMMARY + RECENT MEMORIES ===
+    summary_text = ""
+    try:
+        conn2 = psycopg2.connect(DATABASE_URL)
+        with conn2.cursor() as cur2:
+            cur2.execute("SELECT summary FROM memory_hive WHERE user_id=%s", (str(user_id),))
+            row = cur2.fetchone()
+            if row and row[0]:
+                summary_text = json.dumps(row[0])[:1500]
+        conn2.close()
+    except Exception as e:
+        print(f"SUMMARY LOAD FAILED: {e}")
+
+    raw_mems = search_memory(user_id, req.message, 8)
     print(f"DEBUG SEARCH: {len(raw_mems)} hits")
 
     clean = []
@@ -847,11 +835,21 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
 
     context = "\n\n---\n\n".join(clean)[:3000]
     user_msg = req.message.replace("\x00","")[:1500]
-    system = f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. Use DOCUMENTS and WEB RESULTS to answer if relevant, otherwise chat normally. If WEB RESULTS are present, use them for current facts and mention the source. Always finish your answer completely, do not stop mid-sentence.\n\nDOCUMENTS:\n{context}\n\nWEB RESULTS:\n{web_context[:3000]}"
+
+    # === SYSTEM PROMPT NOW USES MEMORY ===
+    system = (
+        f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. "
+        f"Always finish your answer completely, do not stop mid-sentence.\n\n"
+        f"LONG-TERM MEMORY ABOUT THIS USER (facts, likes, goals - USE THIS):\n{summary_text}\n\n"
+        f"RECENT MEMORIES / DOCUMENTS:\n{context}\n\n"
+        f"WEB RESULTS:\n{web_context[:3000]}\n\n"
+        f"If the user asks about themselves, answer from LONG-TERM MEMORY and RECENT MEMORIES first. "
+        f"If WEB RESULTS are present, use them for current facts and mention the source."
+    )
 
     res = groq_chat(
         messages=[
-            {"role":"system","content": system[:4000]},
+            {"role":"system","content": system[:4500]},
             {"role":"user","content": user_msg}
         ],
         max_tokens=3000
@@ -862,10 +860,15 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
 
     reply = clean_keep_bold(reply)
 
+    # === SAVE MEMORY - FIXED: privacy=False so it can be recalled ===
     try:
-        save_memory(user_id, f"User: {user_msg[:300]}\nAI: {reply[:300]}", "conversation", 0.7, privacy=True)
-    except:
-        pass
+        # 1. Save full conversation (for recall)
+        save_memory(user_id, f"User: {user_msg}\nAI: {reply}", "conversation", 0.7, privacy=False)
+        # 2. Save user facts separately so summary picks them up faster
+        if any(k in lower for k in ["my name is", "i am", "i live", "i like", "i love", "my favorite", "my favourite", "i work", "my job", "i study"]):
+            save_memory(user_id, f"FACT: {user_msg}", "fact", 0.9, privacy=False)
+    except Exception as e:
+        print(f"SAVE MEMORY FAILED: {e}")
 
     now = time.time()
     if now - last_summary_update.get(user_id,0) > 300:
@@ -879,14 +882,14 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
 user_last_upload = defaultdict(float)
 
 def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx: int):
-    print(f"BG SAVE USER_ID: {user_id} file={filename} start={start_idx} total={len(chunks)} privacy=True")
+    print(f"BG SAVE USER_ID: {user_id} file={filename} start={start_idx} total={len(chunks)} privacy=False")
     for idx in range(start_idx, len(chunks)):
         try:
             clean = chunks[idx].replace("\x00", "").strip()
             if not clean:
                 continue
-            save_memory(user_id, f"File: {filename} {clean}", "document", 0.8, privacy=True)
-            print(f"CHUNK {idx} SAVED OK privacy=True len={len(clean)}")
+            save_memory(user_id, f"File: {filename} {clean}", "document", 0.8, privacy=False)
+            print(f"CHUNK {idx} SAVED OK privacy=False len={len(clean)}")
             time.sleep(0.2)
         except Exception as e:
             print(f"Chunk {idx} skip: {e}")
@@ -963,8 +966,8 @@ async def upload(
 
     for idx in range(min(2, len(chunks))):
         try:
-            save_memory(user_id, f"File: {original_filename} {chunks[idx]}", "document", 0.8, privacy=True)
-            print(f"CHUNK {idx} SAVED OK privacy=True File: {original_filename}")
+            save_memory(user_id, f"File: {original_filename} {chunks[idx]}", "document", 0.8, privacy=False)
+            print(f"CHUNK {idx} SAVED OK privacy=False File: {original_filename}")
         except Exception as e:
             print(f"chunk {idx} failed: {e}")
 
@@ -972,7 +975,7 @@ async def upload(
         background_tasks.add_task(save_chunks_background, user_id, original_filename, chunks, 2)
 
     return {
-        "reply": f"File {original_filename} saved: {len(chunks)} chunks (private). Ask me anything. (Note:Be specific about the file name, not to confuse the AI, so you don't get wrong reply). File will fully save for 4 to 30 seconds depending on how large the file is, then the AI can have access to the full content of the file, first two pages saves for two seconds so the AI can reply correctly regarding the first two pages in the first two seconds.",
+        "reply": f"File {original_filename} saved: {len(chunks)} chunks. Ask me anything. (Note:Be specific about the file name, not to confuse the AI, so you don't get wrong reply). File will fully save for 4 to 30 seconds depending on how large the file is, then the AI can have access to the full content of the file, first two pages saves for two seconds so the AI can reply correctly regarding the first two pages in the first two seconds.",
         "status": "indexed",
         "chunks": len(chunks)
     }
