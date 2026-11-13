@@ -519,53 +519,58 @@ def save_memory(user_id, content, category="general", importance=0.5, emotion=No
         return
 
 def search_memory(user_id, query, limit=8):
-    print(f"SEARCH USER_ID: {user_id} query={query[:50]}")
     try:
         emb = embed_text(query, task="retrieval.query")
-        print(f"EMBEDDING OK len={len(emb)}")
         conn = psycopg2.connect(DATABASE_URL)
         register_vector(conn)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # 1. Similar memories
             cur.execute(
                 """
                 SELECT content, category FROM memories 
                 WHERE user_id=%s 
-                AND (
-                    privacy_mode IS NULL 
-                    OR privacy_mode = false
-                )
+                AND (privacy_mode IS NULL OR privacy_mode = false)
                 ORDER BY embedding <=> %s::vector 
                 LIMIT %s
                 """,
                 (str(user_id), emb, limit)
             )
             rows = cur.fetchall()
-            print(f"HITS TOTAL: {len(rows)}")
-            docs = [r for r in rows if r.get('category') == 'document']
-            facts = [r for r in rows if r.get('category') == 'fact']
-            convos = [r for r in rows if r.get('category') == 'conversation']
-            print(f"DOC HITS: {len(docs)} | FACT HITS: {len(facts)} | CONVO HITS: {len(convos)}")
-
+            # 2. FALLBACK: Last 5 inserted, no matter the similarity
+            cur.execute(
+                """
+                SELECT content, category FROM memories
+                WHERE user_id=%s
+                AND (privacy_mode IS NULL OR privacy_mode = false)
+                ORDER BY ctid DESC
+                LIMIT 5
+                """,
+                (str(user_id),)
+            )
+            recent = cur.fetchall()
         conn.close()
-        
-        # TRIM content to 700 chars max to prevent truncation
-        cleaned = []
-        for r in rows:
+
+        # Merge, no duplicates
+        seen = set()
+        all_rows = []
+        for r in rows + recent:
             c = r['content'] or ""
-            # Keep category so /chat knows what it is
+            if c not in seen:
+                seen.add(c)
+                all_rows.append(r)
+
+        cleaned = []
+        for r in all_rows:
+            c = r['content'] or ""
             cat = r.get('category', 'general')
-            # Remove File: prefix to save tokens
             if c.startswith("File:"):
                 c = c.split(" ", 2)[-1] if len(c.split(" ")) > 2 else c
             if len(c) > 700:
                 c = c[:700] + "..."
             cleaned.append({"content": c, "category": cat})
-        
         return cleaned
-        
     except Exception as e:
         print(f"search_memory FAILED: {e}")
-        import traceback; traceback.print_exc()
         return []
         
 def update_summary(user_id):
@@ -843,8 +848,9 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         f"LONG-TERM MEMORY ABOUT THIS USER (facts, likes, goals - USE THIS):\n{summary_text}\n\n"
         f"RECENT MEMORIES / DOCUMENTS:\n{context}\n\n"
         f"WEB RESULTS:\n{web_context[:3000]}\n\n"
-        f"If the user asks about themselves, answer from LONG-TERM MEMORY and RECENT MEMORIES first. "
+        f"RULE: Use LONG-TERM MEMORY and RECENT MEMORIES below to answer. If the answer is in there, repeat it. Never say 'I don't remember' or 'I don't know' if it is in the memories. If user asks what they said before, quote the RECENT MEMORIES."
         f"If WEB RESULTS are present, use them for current facts and mention the source."
+        f"Answer with emoji."
     )
 
     res = groq_chat(
