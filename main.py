@@ -1,5 +1,5 @@
 from fastapi.responses import JSONResponse
-from typing import List, Dict
+from typing import List, Dict, Optional
 import traceback
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -239,10 +239,6 @@ def fix_embedding_dim():
 # Call it on startup
 fix_embedding_dim()
 
-class ChatRequest(BaseModel):
-    message: str
-    persona: str = "assistant"
-    roast_level: int = 0
 
 def get_db():
     return psycopg2.connect(DATABASE_URL) # sslmode='require')
@@ -259,7 +255,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 -- 2. TABLES SECOND  
 -- CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY, email TEXT UNIQUE, password_hash TEXT);
-CREATE TABLE IF NOT EXISTS memories (id UUID PRIMARY KEY, user_id UUID, content TEXT, embedding vector(1536), category TEXT, importance FLOAT, emotion TEXT, privacy_mode BOOLEAN);
+CREATE TABLE IF NOT EXISTS memories (id UUID PRIMARY KEY, user_id UUID, content TEXT, embedding vector(1024), category TEXT, importance FLOAT, emotion TEXT, privacy_mode BOOLEAN);
 CREATE TABLE IF NOT EXISTS memory_hive (user_id UUID PRIMARY KEY, summary JSONB);
 CREATE TABLE IF NOT EXISTS tasks (id UUID PRIMARY KEY, user_id UUID, title TEXT, due_at TIMESTAMP, done BOOLEAN);
 CREATE TABLE IF NOT EXISTS contacts (id UUID PRIMARY KEY, user_id UUID, name TEXT, notes TEXT);
@@ -352,6 +348,22 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- AI CHATS - ChatGPT style
+CREATE TABLE IF NOT EXISTS ai_chats (
+  id SERIAL PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  title TEXT DEFAULT 'New Chat',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS ai_chat_messages (
+  id SERIAL PRIMARY KEY,
+  chat_id INTEGER REFERENCES ai_chats(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- TIER 6-8: INDEXES FOR PERFORMANCE
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id);
@@ -394,6 +406,7 @@ CREATE TRIGGER set_timestamp_friendships BEFORE UPDATE ON friendships FOR EACH R
     print("Tables created/verified ✅")
 
 create_tables()
+
 
 # DB + VECTOR
 #conn = psycopg2.connect(os.getenv("DATABASE_URL"), sslmode='require')
@@ -698,13 +711,107 @@ async def generate_video(request: dict, user_id: str = Depends(get_user)):
 # Chat
 last_summary_update = defaultdict(float)
 
+class ChatRequest(BaseModel):
+    message: str
+    persona: str = "OBANOR"
+    roast_level: int = 5
+    chat_id: Optional[int] = None
+
+def load_chat_history(chat_id, limit=20):
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        with conn.cursor() as cur:
+            cur.execute("SELECT role, content FROM ai_chat_messages WHERE chat_id=%s ORDER BY id DESC LIMIT %s", (chat_id, limit))
+            rows = list(reversed(cur.fetchall()))
+        conn.close()
+        return [{"role": r[0], "content": r[1]} for r in rows]
+    except Exception as e:
+        print(f"load_history failed: {e}")
+        return []
+
+def load_facts(user_id):
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        with conn.cursor() as cur:
+            cur.execute("SELECT content FROM memories WHERE user_id=%s AND category='fact' AND (privacy_mode IS NULL OR privacy_mode=false) ORDER BY ctid DESC LIMIT 30", (str(user_id),))
+            rows = cur.fetchall()
+        conn.close()
+        return [r[0] for r in rows if r[0]]
+    except Exception as e:
+        print(f"load_facts failed: {e}")
+        return []
+
+def save_assistant_msg(chat_id, user_id, reply):
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO ai_chat_messages (chat_id, user_id, role, content) VALUES (%s,%s,'assistant',%s)", (chat_id, str(user_id), reply))
+        conn.commit(); conn.close()
+    except Exception as e:
+        print(f"save_assistant failed: {e}")
+
+def extract_and_save_facts(user_id, user_msg, ai_reply):
+    try:
+        res = groq_chat(
+            messages=[
+                {"role": "system", "content": "Extract ONLY permanent facts about the user. Name, city, job, likes, goals. Return each on new line like: User likes Manchester United. If none, return exactly NONE."},
+                {"role": "user", "content": f"User: {user_msg}\nAI: {ai_reply}"}
+            ],
+            max_tokens=200
+        )
+        text = res.choices[0].message.content.strip()
+        if text == "NONE" or not text:
+            return
+        for line in text.split("\n"):
+            line = line.strip().lstrip("-•* ").strip()
+            if 5 < len(line) < 300:
+                save_memory(user_id, line, "fact", 0.9, privacy=False)
+    except Exception as e:
+        print(f"extract_facts failed: {e}")
+
+@app.get("/ai-chats")
+def list_chats(user_id: str = Depends(get_user)):
+    conn = psycopg2.connect(DATABASE_URL)
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, title, created_at FROM ai_chats WHERE user_id=%s ORDER BY id DESC", (str(user_id),))
+        rows = cur.fetchall()
+    conn.close()
+    return [{"id": r[0], "title": r[1], "created_at": str(r[2])} for r in rows]
+
+@app.get("/ai-chats/{chat_id}/messages")
+def get_chat_messages(chat_id: int, user_id: str = Depends(get_user)):
+    return {"messages": load_chat_history(chat_id, 100)}
+
+@app.delete("/ai-chats/{chat_id}")
+def delete_chat(chat_id: int, user_id: str = Depends(get_user)):
+    conn = psycopg2.connect(DATABASE_URL)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM ai_chats WHERE id=%s AND user_id=%s", (chat_id, str(user_id)))
+    conn.commit(); conn.close()
+    return {"deleted": True}
+
 @app.post("/chat")
 @limiter.limit("20/minute")
 async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
     print(f"CHAT USER_ID: {user_id}")
     lower = req.message.lower()
 
-    # === VIDEO GENERATION - MUST BE FIRST ===
+    # === AI CHAT - Drawer ===
+    chat_id = getattr(req, 'chat_id', None)
+    conn0 = psycopg2.connect(DATABASE_URL)
+    with conn0.cursor() as cur0:
+        if not chat_id:
+            cur0.execute("INSERT INTO ai_chats (user_id, title) VALUES (%s,%s) RETURNING id", (str(user_id), req.message[:40]))
+            chat_id = cur0.fetchone()[0]
+        else:
+            cur0.execute("SELECT id FROM ai_chats WHERE id=%s AND user_id=%s", (chat_id, str(user_id)))
+            if not cur0.fetchone():
+                conn0.close()
+                return {"error": "Chat not found"}
+        cur0.execute("INSERT INTO ai_chat_messages (chat_id, user_id, role, content) VALUES (%s,%s,'user',%s)", (chat_id, str(user_id), req.message))
+    conn0.commit(); conn0.close()
+
+    # === VIDEO GENERATION ===
     video_keywords = [
         "generate video", "generate a video", "create video", "create a video",
         "make video", "make a video", "make me a video", "make me video",
@@ -733,20 +840,30 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
                 break
         blocked = is_blocked(prompt)
         if blocked:
-            return {"reply": "This prompt is not allowed. Please try a different prompt."}
+            r = "This prompt is not allowed. Please try a different prompt."
+            save_assistant_msg(chat_id, user_id, r)
+            return {"reply": r, "chat_id": chat_id}
         if not POLLINATIONS_KEY:
-            return {"reply": "Video key not set in Render. Add POLLINATIONS_KEY in Environment."}
+            r = "Video key not set in Render. Add POLLINATIONS_KEY in Environment."
+            save_assistant_msg(chat_id, user_id, r)
+            return {"reply": r, "chat_id": chat_id}
         try:
             video_url = generate_video_url(prompt)
             r = httpx.get(video_url, timeout=180.0)
             if r.status_code != 200:
-                return {"reply": f"Video generation failed: {r.status_code} - {r.text[:200]}"}
+                rr = f"Video generation failed: {r.status_code} - {r.text[:200]}"
+                save_assistant_msg(chat_id, user_id, rr)
+                return {"reply": rr, "chat_id": chat_id}
             up = cloudinary.uploader.upload(io.BytesIO(r.content), resource_type="video", folder="obanor_videos")
             cloud_url = up["secure_url"]
-            return {"reply": f"<b>Video ready:</b> {prompt}\n\nVIDEO::{cloud_url}"}
+            rr = f"<b>Video ready:</b> {prompt}\n\nVIDEO::{cloud_url}"
+            save_assistant_msg(chat_id, user_id, rr)
+            return {"reply": rr, "chat_id": chat_id}
         except Exception as e:
             traceback.print_exc()
-            return {"reply": f"Video error: {str(e)}"}
+            rr = f"Video error: {str(e)}"
+            save_assistant_msg(chat_id, user_id, rr)
+            return {"reply": rr, "chat_id": chat_id}
 
     # === IMAGE GENERATION ===
     image_keywords = [
@@ -785,9 +902,13 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
                 break
         blocked = is_blocked(prompt)
         if blocked:
-            return {"reply": "This prompt is not allowed. Please try a different prompt."}
+            r = "This prompt is not allowed. Please try a different prompt."
+            save_assistant_msg(chat_id, user_id, r)
+            return {"reply": r, "chat_id": chat_id}
         image_url = generate_image_url(prompt)
-        return {"reply": f"<b>Generated:</b> {prompt}\n\nIMAGE::{image_url}"}
+        rr = f"<b>Generated:</b> {prompt}\n\nIMAGE::{image_url}"
+        save_assistant_msg(chat_id, user_id, rr)
+        return {"reply": rr, "chat_id": chat_id}
 
     # === AUTO WEB SEARCH ===
     search_triggers = [
@@ -807,7 +928,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
             print(f"WEB SEARCH FAILED: {e}")
             web_context = ""
 
-    # === MEMORY - LOAD LONG-TERM SUMMARY + RECENT MEMORIES ===
+    # === MEMORY ===
     summary_text = ""
     try:
         conn2 = psycopg2.connect(DATABASE_URL)
@@ -820,9 +941,11 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
     except Exception as e:
         print(f"SUMMARY LOAD FAILED: {e}")
 
+    facts = load_facts(user_id)
+    history = load_chat_history(chat_id, 20)
+
     raw_mems = search_memory(user_id, req.message, 8)
     print(f"DEBUG SEARCH: {len(raw_mems)} hits")
-
     clean = []
     for m in raw_mems:
         c = m.get('content','') if isinstance(m, dict) else getattr(m,'content','') or str(m)
@@ -837,52 +960,48 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         if len(c) > 700:
             c = c[:700]
         clean.append(c)
-
     context = "\n\n---\n\n".join(clean)[:3000]
     user_msg = req.message.replace("\x00","")[:1500]
 
-    # === SYSTEM PROMPT NOW USES MEMORY ===
     system = (
         f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. "
         f"Always finish your answer completely, do not stop mid-sentence.\n\n"
-        f"LONG-TERM MEMORY ABOUT THIS USER (facts, likes, goals - USE THIS):\n{summary_text}\n\n"
+        f"GLOBAL MEMORY - Facts about user across ALL chats (MUST USE):\n{chr(10).join(f'- {f}' for f in facts) if facts else 'No facts yet.'}\n\n"
+        f"LONG-TERM MEMORY SUMMARY:\n{summary_text}\n\n"
         f"RECENT MEMORIES / DOCUMENTS:\n{context}\n\n"
         f"WEB RESULTS:\n{web_context[:3000]}\n\n"
-        f"RULE: Use RECENT MEMORIES below to answer. If the answer is in there, repeat it. Never say 'I don't remember' or 'I don't know' if it is in the memories. If user asks what they said before, quote the RECENT MEMORIES."
+        f"RULE: Use GLOBAL MEMORY to answer about the user. Never say 'I don't remember' if it is in GLOBAL MEMORY. Use chat history for this conversation only."
         f"If WEB RESULTS are present, use them for current facts and mention the source."
         f"Answer with emoji."
         f"You can generate images and videos."
     )
 
-    res = groq_chat(
-        messages=[
-            {"role":"system","content": system[:4500]},
-            {"role":"user","content": user_msg}
-        ],
-        max_tokens=3000
-    )
+    groq_messages = [{"role": "system", "content": system[:4500]}] + history
+
+    res = groq_chat(messages=groq_messages, max_tokens=3000)
     reply = res.choices[0].message.content
     if res.choices[0].finish_reason == "length":
         reply += "\n\n...[Reply was long, type 'continue' to get the rest]"
-
     reply = clean_keep_bold(reply)
 
-    # === SAVE MEMORY - FIXED: privacy=False so it can be recalled ===
+    save_assistant_msg(chat_id, user_id, reply)
+
     try:
-        # 1. Save full conversation (for recall)
         save_memory(user_id, f"User: {user_msg}\nAI: {reply}", "conversation", 0.7, privacy=False)
-        # 2. Save user facts separately so summary picks them up faster
         if any(k in lower for k in ["my name is", "i am", "i live", "i like", "i love", "my favorite", "my favourite", "i work", "my job", "i study"]):
             save_memory(user_id, f"FACT: {user_msg}", "fact", 0.9, privacy=False)
     except Exception as e:
         print(f"SAVE MEMORY FAILED: {e}")
+
+    background_tasks.add_task(extract_and_save_facts, user_id, user_msg, reply)
 
     now = time.time()
     if now - last_summary_update.get(user_id,0) > 300:
         background_tasks.add_task(update_summary, user_id)
         last_summary_update[user_id] = now
 
-    return {"reply": reply}
+    return {"reply": reply, "chat_id": chat_id}
+
 
 
 # Upload helpers
