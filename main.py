@@ -780,6 +780,13 @@ def list_chats(user_id: str = Depends(get_user)):
 
 @app.get("/ai-chats/{chat_id}/messages")
 def get_chat_messages(chat_id: int, user_id: str = Depends(get_user)):
+    conn = psycopg2.connect(DATABASE_URL)
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM ai_chats WHERE id=%s AND user_id=%s", (chat_id, str(user_id)))
+        if not cur.fetchone():
+            conn.close()
+            raise HTTPException(404, "Chat not found")
+    conn.close()
     return {"messages": load_chat_history(chat_id, 100)}
 
 @app.delete("/ai-chats/{chat_id}")
@@ -796,20 +803,24 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
     print(f"CHAT USER_ID: {user_id}")
     lower = req.message.lower()
 
-    # === AI CHAT - Drawer ===
+    # === AI CHAT - Drawer - FIXED ===
     chat_id = getattr(req, 'chat_id', None)
     conn0 = psycopg2.connect(DATABASE_URL)
-    with conn0.cursor() as cur0:
-        if not chat_id:
-            cur0.execute("INSERT INTO ai_chats (user_id, title) VALUES (%s,%s) RETURNING id", (str(user_id), req.message[:40]))
-            chat_id = cur0.fetchone()[0]
-        else:
-            cur0.execute("SELECT id FROM ai_chats WHERE id=%s AND user_id=%s", (chat_id, str(user_id)))
-            if not cur0.fetchone():
-                conn0.close()
-                return {"error": "Chat not found"}
-        cur0.execute("INSERT INTO ai_chat_messages (chat_id, user_id, role, content) VALUES (%s,%s,'user',%s)", (chat_id, str(user_id), req.message))
-    conn0.commit(); conn0.close()
+    try:
+        with conn0.cursor() as cur0:
+            if not chat_id:
+                cur0.execute("INSERT INTO ai_chats (user_id, title) VALUES (%s,%s) RETURNING id", (str(user_id), req.message[:40]))
+                chat_id = cur0.fetchone()[0]
+            else:
+                cur0.execute("SELECT id FROM ai_chats WHERE id=%s AND user_id=%s", (chat_id, str(user_id)))
+                if not cur0.fetchone():
+                    # ✅ FIX: Old chat was deleted - create fresh one instead of returning {"error": "Chat not found"}
+                    cur0.execute("INSERT INTO ai_chats (user_id, title) VALUES (%s,%s) RETURNING id", (str(user_id), req.message[:40]))
+                    chat_id = cur0.fetchone()[0]
+            cur0.execute("INSERT INTO ai_chat_messages (chat_id, user_id, role, content) VALUES (%s,%s,'user',%s)", (chat_id, str(user_id), req.message))
+        conn0.commit()
+    finally:
+        conn0.close()
 
     # === VIDEO GENERATION ===
     video_keywords = [
