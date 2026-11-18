@@ -431,21 +431,17 @@ def register(
     hash = pwd.hash(password)
     user_id = str(uuid.uuid4())
     
-    conn = get_db()
+    conn = get_db()  # <-- Must use get_db() here
     try:
         with conn.cursor() as cur:
             cur.execute("INSERT INTO users (id,email,password_hash) VALUES (%s,%s,%s)", (user_id, email, hash))
             conn.commit()
         return {"user_id": user_id, "message": "User created successfully"}
-    except Exception as e:
+    except:
         conn.rollback()
-        # Only say "already exists" if it's actually a duplicate email
-        if "duplicate" in str(e).lower() or "unique" in str(e).lower() or "already exists" in str(e).lower():
-            raise HTTPException(status_code=400, detail="Account already exists, please change your username or password")
-        # Real DB error - show real error
-        raise HTTPException(status_code=500, detail=f"Register failed: {str(e)}")
+        raise HTTPException(409, "Email already exists")
     finally:
-        conn.close()
+        conn.close()  # <-- Don't forget to close
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
     to_encode = data.copy()
