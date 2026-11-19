@@ -881,27 +881,27 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
             return {"reply": rr, "chat_id": chat_id}
 
     # === IMAGE GENERATION ===
-    image_keywords = [
-        "generate image", "generate a image", "generate an image", "generate a picture", "generate picture",
-        "create image", "create an image", "create a picture", "create a pic", "create picture", "create pic",
-        "make image", "make an image", "make a picture", "make me a picture", "make me an image", "make a pic",
-        "draw ", "draw me", "draw a", "draw an",
-        "picture of", "pic of", "image of", "photo of",
-        "i want a picture", "i want an image", "i want a pic",
-        "give me a picture", "give me an image", "give me a pic",
-        "make me a pic", "create an image",
-        "can you draw", "can you make an image", "can you create an image", "can you generate an image",
-        "can you make a picture", "can you create a picture", "can you make me a picture",
-        "please draw", "please make an image", "please create an image", "please generate an image",
-        "please make me a picture", "please make a picture",
-        "i need a picture", "i need an image", "i need a pic",
-        "paint ", "paint me", "paint a", "sketch ", "sketch me", "illustrate", "illustration of",
-        "render ", "design ", "make art", "create art", "generate art", "make artwork", "create artwork",
-        "draw a picture", "draw an image", "draw me a picture",
-        "image please", "picture please", "pic please",
-        "make an image of", "create an image of", "generate an image of",
-        "a picture of", "an image of", "a photo of"
-    ]
+ #   image_keywords = [
+ #       "generate image", "generate a image", "generate an image", "generate a picture", "generate picture",
+ #       "create image", "create an image", "create a picture", "create a pic", "create picture", "create pic",
+ #       "make image", "make an image", "make a picture", "make me a picture", "make me an image", "make a pic",
+ #       "draw ", "draw me", "draw a", "draw an",
+ #       "picture of", "pic of", "image of", "photo of",
+ #       "i want a picture", "i want an image", "i want a pic",
+ #       "give me a picture", "give me an image", "give me a pic",
+ #       "make me a pic", "create an image",
+ #       "can you draw", "can you make an image", "can you create an image", "can you generate an image",
+ #       "can you make a picture", "can you create a picture", "can you make me a picture",
+ #       "please draw", "please make an image", "please create an image", "please generate an image",
+ #       "please make me a picture", "please make a picture",
+ #       "i need a picture", "i need an image", "i need a pic",
+ #       "paint ", "paint me", "paint a", "sketch ", "sketch me", "illustrate", "illustration of",
+ #       "render ", "design ", "make art", "create art", "generate art", "make artwork", "create artwork",
+ #       "draw a picture", "draw an image", "draw me a picture",
+ #       "image please", "picture please", "pic please",
+ #       "make an image of", "create an image of", "generate an image of",
+ #       "a picture of", "an image of", "a photo of"
+ #   ]
     if any(k in lower for k in image_keywords):
         prompt = req.message
         for kw in sorted(image_keywords, key=len, reverse=True):
