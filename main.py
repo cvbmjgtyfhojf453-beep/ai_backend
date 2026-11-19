@@ -828,17 +828,17 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
 
     # === VIDEO GENERATION ===
     video_keywords = [
-        "generate video", "generate a video", "create video", "create a video",
-        "make video", "make a video", "make me a video", "make me video",
-        "create a clip", "make a clip", "generate a clip",
-        "video of", "a video of", "clip of", "/video",
-        "can you make a video", "can you create a video", "can you generate a video",
-        "please make a video", "please create a video", "please generate a video",
-        "i want a video", "i need a video", "give me a video", "make me a clip",
-        "animate", "make an animation", "create an animation", "generate an animation",
-        "make a short video", "create a short video", "make a film", "film of",
-        "make a movie", "create a movie",
-        "video please", "make video of", "create video of", "generate video of"
+ #       "generate video", "generate a video", "create video", "create a video",
+ #       "make video", "make a video", "make me a video", "make me video",
+ #       "create a clip", "make a clip", "generate a clip",
+ #       "video of", "a video of", "clip of", "/video",
+ #       "can you make a video", "can you create a video", "can you generate a video",
+ #       "please make a video", "please create a video", "please generate a video",
+ #       "i want a video", "i need a video", "give me a video", "make me a clip",
+ #       "animate", "make an animation", "create an animation", "generate an animation",
+ #       "make a short video", "create a short video", "make a film", "film of",
+ #       "make a movie", "create a movie",
+ #       "video please", "make video of", "create video of", "generate video of"
     ]
     if any(k in lower for k in video_keywords):
         prompt = req.message
