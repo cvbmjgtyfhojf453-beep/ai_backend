@@ -881,7 +881,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
             return {"reply": rr, "chat_id": chat_id}
 
     # === IMAGE GENERATION ===
- #   image_keywords = [
+    image_keywords = [
  #       "generate image", "generate a image", "generate an image", "generate a picture", "generate picture",
  #       "create image", "create an image", "create a picture", "create a pic", "create picture", "create pic",
  #       "make image", "make an image", "make a picture", "make me a picture", "make me an image", "make a pic",
@@ -901,7 +901,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
  #       "image please", "picture please", "pic please",
  #       "make an image of", "create an image of", "generate an image of",
  #       "a picture of", "an image of", "a photo of"
- #   ]
+    ]
     if any(k in lower for k in image_keywords):
         prompt = req.message
         for kw in sorted(image_keywords, key=len, reverse=True):
