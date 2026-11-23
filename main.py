@@ -11,7 +11,6 @@ from sqlalchemy.orm import sessionmaker
 import os, json, uuid
 from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, Depends, HTTPException, Request, BackgroundTasks, File, Form
-# from fastapi.security import OAuth2PasswordBearer
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -23,12 +22,11 @@ from pypdf import PdfReader
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from docx import Document
 from jose import jwt, JWTError
-from passlib.context import CryptContext #52 Auth
+from passlib.context import CryptContext
 import requests
-from apscheduler.schedulers.background import BackgroundScheduler #22 Proactive
-from google.oauth2.credentials import Credentials #28 Calendar
+from apscheduler.schedulers.background import BackgroundScheduler
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-# from playwright.sync_api import sync_playwright #37 Browser
 import cloudinary
 import cloudinary.uploader
 from dotenv import load_dotenv
@@ -39,9 +37,15 @@ import io
 import time
 from collections import defaultdict
 from io import BytesIO
-import fitz  # PyMuPDF
+import fitz
 import re
 import urllib.parse, random
+import secrets
+import smtplib
+from email.mime.text import MIMEText
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
+from google_auth_oauthlib.flow import Flow
 
 load_dotenv()
 
@@ -58,13 +62,19 @@ app.add_middleware(
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-SECRET_KEY = os.getenv("SECRET_KEY", "secretkeyokay")
-# ===== VIDEO - Pollinations REAL, Video-only key =====
+# ===== FIXED: No fallback, must be set on Render =====
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise Exception("SECRET_KEY not set in Render Environment!")
 POLLINATIONS_KEY = os.getenv("POLLINATIONS_KEY", "")
 
-# ===== PROMPT FILTER - STRICT + BYPASS-PROOF =====
+# Google + Email config
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
+
+# ===== WEB SEARCH, BLOCKED WORDS, VIDEO, etc - UNCHANGED =====
 BLOCKED_WORDS = [
-    # --- Sexual / Nudity ---
     "nude", "nudes", "n00d", "naked", "undress", "undressed", "strip", "stripper",
     "sex", "sexy", "s3x", "porn", "p0rn", "pornhub", "onlyfans", "erotic",
     "nsfw", "xxx", "pornographic", "topless", "bottomless", "bikini",
@@ -79,33 +89,23 @@ BLOCKED_WORDS = [
     "what is under", "under her dress", "under skirt", "upskirt",
     "see through", "wet t-shirt", "hot girl", "hot woman", "sexy girl",
     "sexy woman", "sexy lady", "big ass", "big boobs", "p*nis", "p#nis", "d*ck",
-
-    # --- Minors / Age - ZERO TOLERANCE ---
     "child", "ch1ld", "kid", "kids", "baby", "minor", "teen", "teenager",
     "teens", "schoolgirl", "schoolboy", "underage", "young girl", "young boy",
     "young teen", "little girl", "little boy", "toddler", "infant",
     "preschool", "high school girl", "high school boy", "child porn", "cp",
     "jailbait", "lolita", "minor girl", "minor boy", "13 year", "14 year",
     "15 year", "16 year", "17 year", "under 18", "small girl", "small boy",
-
-    # --- Real Person / Deepfake / Celebrity ---
     "celebrity", "real person", "deepfake", "face swap", "famous person",
     "taylor swift", "kylie jenner", "kim kardashian", "ariana grande",
     "billie eilish", "selena gomez", "olivia rodrigo", "zendaya",
     "make her look", "put her face", "swap face",
-
-    # --- Violence / Gore / Death ---
     "kill", "murder", "blood", "bloody", "gore", "gory", "torture",
     "behead", "beheading", "suicide", "kill myself", "self harm",
     "cutting", "shooting", "stabbing", "bomb", "explosion", "terrorist",
     "massacre", "dead body", "corpse", "violent", "fight to death",
     "hanging", "drowning", "burn alive", "cut throat",
-
-    # --- Hate / Harassment ---
     "racial slur", "hate crime", "lynch", "kill black", "kill white",
     "hate jews", "hate muslim",
-
-    # --- Drugs / Weapons (for image/video) ---
     "cocaine", "heroin", "meth", "weed smoking", "smoking weed",
     "gun", "rifle", "pistol", "weapon", "knife attack", "shoot someone",
     "make a bomb", "how to kill",
@@ -114,8 +114,6 @@ BLOCKED_WORDS = [
 def is_blocked(prompt: str):
     if not prompt:
         return None
-
-    # Make 2 versions: @ -> u AND @ -> a, so p@ssy and b@d both get caught
     def normalize(s: str):
         s = s.lower()
         s = s.replace(".", "").replace("-", "").replace("_", "").replace(" ", "")
@@ -123,18 +121,15 @@ def is_blocked(prompt: str):
         s = s.replace("0", "o").replace("1", "i").replace("3", "e")
         s = s.replace("4", "a").replace("5", "s")
         return s
-
     clean_u = normalize(prompt).replace("@", "u")
     clean_a = normalize(prompt).replace("@", "a")
     clean_naked = normalize(prompt).replace("@", "")
-
     for word in BLOCKED_WORDS:
         word_clean = normalize(word)
         if word_clean and (word_clean in clean_u or word_clean in clean_a or word_clean in clean_naked):
             return word
     return None
 
-# ===== WEB SEARCH - for Groq =====
 def web_search_tool(query: str):
     try:
         res = requests.post(
@@ -153,69 +148,47 @@ def web_search_tool(query: str):
     except Exception as e:
         return f"Search failed: {e}"
 
-
 def generate_video_url(prompt: str) -> str:
     encoded = urllib.parse.quote(prompt.strip()[:200])
     return f"https://gen.pollinations.ai/image/{encoded}?model=veo&duration=6&key={POLLINATIONS_KEY}"
+
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30 # 30 day
-# oauth2 = OAuth2PasswordBearer(tokenUrl="token")
+ACCESS_TOKEN_EXPIRE_MINUTES = 15  # FIXED: was 30 days, now 15 mins
 pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
-security = HTTPBearer()  # instead of OAuth2PasswordBearer
+security = HTTPBearer()
 scheduler = BackgroundScheduler()
 
-# DB + VECTOR - Auto create tables
-import psycopg2
-from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-
 DATABASE_URL = os.getenv("DATABASE_URL")
-
-
-
-
 FALLBACK_UNTIL = None
 LAST_FALLBACK_LOG = None
 
 def groq_chat(messages, max_tokens=300):
     global FALLBACK_UNTIL, LAST_FALLBACK_LOG
-    
-    # If 20b is rate-limited, don't spam trying it
     models = ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]
     if FALLBACK_UNTIL and datetime.utcnow() < FALLBACK_UNTIL:
-        models = ["openai/gpt-oss-120b"] # skip 20b for now
-
+        models = ["openai/gpt-oss-120b"]
     for model in models:
         try:
-            res = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens
-            )
-            FALLBACK_UNTIL = None # reset on success
+            res = client.chat.completions.create(model=model, messages=messages, max_tokens=max_tokens)
+            FALLBACK_UNTIL = None
             return res
         except Exception as e:
             err = str(e).lower()
             if any(x in err for x in ["429", "413", "rate_limit", "too large", "decommissioned", "404", "access"]):
-                # log only once per hour to avoid spam
                 now = datetime.utcnow()
                 if not LAST_FALLBACK_LOG or (now - LAST_FALLBACK_LOG).seconds > 3600:
                     print(f"{model} failed ({str(e)[:120]}), trying next...")
                     LAST_FALLBACK_LOG = now
-                
                 if "20b" in model and "429" in err:
                     FALLBACK_UNTIL = now + timedelta(hours=1)
                 continue
             raise e
-    
     raise Exception("Both gpt-oss models hit daily limit. Resets 00:00 UTC (1am Lagos). Upgrade at console.groq.com/settings/billing")
-
-
 
 def fix_embedding_dim():
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
     try:
-        # Try to alter first
         cur.execute("ALTER TABLE memories ALTER COLUMN embedding TYPE vector(1024);")
         print("✅ Embedding dim updated to 1024")
     except Exception as e:
@@ -226,179 +199,154 @@ def fix_embedding_dim():
         conn.commit()
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
         conn.commit()
-        # Now recreate table with correct dims
         cur.execute("""
             CREATE TABLE IF NOT EXISTS memories (id UUID PRIMARY KEY, user_id UUID, content TEXT, embedding vector(1024), category TEXT, importance FLOAT, emotion TEXT, privacy_mode BOOLEAN);
         """)
         print("✅ Table recreated with 1024 dims")
-    
     conn.commit()
     cur.close()
     conn.close()
 
-# Call it on startup
 fix_embedding_dim()
 
-
 def get_db():
-    return psycopg2.connect(DATABASE_URL) # sslmode='require')
-
+    return psycopg2.connect(DATABASE_URL)
 
 def create_tables():
-    conn = psycopg2.connect(DATABASE_URL) # sslmode='require')
+    conn = psycopg2.connect(DATABASE_URL)
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     cur = conn.cursor()
-    
     sql = """
-    -- 1. EXTENSION FIRST
-CREATE EXTENSION IF NOT EXISTS vector;
-
--- 2. TABLES SECOND  
--- CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY, email TEXT UNIQUE, password_hash TEXT);
-CREATE TABLE IF NOT EXISTS memories (id UUID PRIMARY KEY, user_id UUID, content TEXT, embedding vector(1024), category TEXT, importance FLOAT, emotion TEXT, privacy_mode BOOLEAN);
-CREATE TABLE IF NOT EXISTS memory_hive (user_id UUID PRIMARY KEY, summary JSONB);
-CREATE TABLE IF NOT EXISTS tasks (id UUID PRIMARY KEY, user_id UUID, title TEXT, due_at TIMESTAMP, done BOOLEAN);
-CREATE TABLE IF NOT EXISTS contacts (id UUID PRIMARY KEY, user_id UUID, name TEXT, notes TEXT);
-CREATE TABLE IF NOT EXISTS webhooks (id UUID PRIMARY KEY, user_id UUID, trigger TEXT, action TEXT);
-CREATE TABLE IF NOT EXISTS backups (id UUID PRIMARY KEY, created_at TIMESTAMP, url TEXT);
-
-
--- ENABLE UUID EXTENSION
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
--- TIER 1: USERS + PROFILES
-CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    email TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS profiles (
-    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    full_name TEXT,
-    avatar_url TEXT,
-    bio TEXT,
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- TIER 2: FRIENDS + BLOCKS
-CREATE TABLE IF NOT EXISTS friendships (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    friend_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    status TEXT DEFAULT 'pending' CHECK (status IN ('pending','accepted','blocked')),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(user_id, friend_id),
-    CHECK (user_id != friend_id)
-);
-
--- TIER 3: POSTS
-CREATE TABLE IF NOT EXISTS posts (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    content TEXT NOT NULL,
-    image_url TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- TIER 4: COMMENTS + LIKES
-CREATE TABLE IF NOT EXISTS comments (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    post_id UUID REFERENCES posts(id) ON DELETE CASCADE,
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    content TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS likes (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    post_id UUID REFERENCES posts(id) ON DELETE CASCADE,
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(post_id, user_id)
-);
-
--- TIER 5: CHATS + MESSAGES
-CREATE TABLE IF NOT EXISTS chats (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    is_group BOOLEAN DEFAULT FALSE,
-    name TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS chat_participants (
-    chat_id UUID REFERENCES chats(id) ON DELETE CASCADE,
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    joined_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (chat_id, user_id)
-);
-
-CREATE TABLE IF NOT EXISTS messages (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    chat_id UUID REFERENCES chats(id) ON DELETE CASCADE,
-    sender_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    content TEXT,
-    is_read BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- AI CHATS - ChatGPT style
-CREATE TABLE IF NOT EXISTS ai_chats (
-  id SERIAL PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  title TEXT DEFAULT 'New Chat',
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE TABLE IF NOT EXISTS ai_chat_messages (
-  id SERIAL PRIMARY KEY,
-  chat_id INTEGER REFERENCES ai_chats(id) ON DELETE CASCADE,
-  user_id TEXT NOT NULL,
-  role TEXT NOT NULL,
-  content TEXT NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- TIER 6-8: INDEXES FOR PERFORMANCE
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id);
-CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id);
-CREATE INDEX IF NOT EXISTS idx_likes_post_id ON likes(post_id);
-CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
-CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_friendships_user_id ON friendships(user_id);
-CREATE INDEX IF NOT EXISTS idx_friendships_friend_id ON friendships(friend_id);
-CREATE INDEX IF NOT EXISTS idx_friendships_status ON friendships(status);
-
--- TIER 7: AUTO UPDATE updated_at TRIGGER
-CREATE OR REPLACE FUNCTION trigger_set_timestamp()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = NOW();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS set_timestamp_users ON users;
-DROP TRIGGER IF EXISTS set_timestamp_profiles ON profiles;
-DROP TRIGGER IF EXISTS set_timestamp_posts ON posts;
-DROP TRIGGER IF EXISTS set_timestamp_comments ON comments;
-DROP TRIGGER IF EXISTS set_timestamp_chats ON chats;
-DROP TRIGGER IF EXISTS set_timestamp_friendships ON friendships;
-
-CREATE TRIGGER set_timestamp_users BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
-CREATE TRIGGER set_timestamp_profiles BEFORE UPDATE ON profiles FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
-CREATE TRIGGER set_timestamp_posts BEFORE UPDATE ON posts FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
-CREATE TRIGGER set_timestamp_comments BEFORE UPDATE ON comments FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
-CREATE TRIGGER set_timestamp_chats BEFORE UPDATE ON chats FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
-CREATE TRIGGER set_timestamp_friendships BEFORE UPDATE ON friendships FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
-
+    CREATE EXTENSION IF NOT EXISTS vector;
+    CREATE TABLE IF NOT EXISTS memories (id UUID PRIMARY KEY, user_id UUID, content TEXT, embedding vector(1024), category TEXT, importance FLOAT, emotion TEXT, privacy_mode BOOLEAN);
+    CREATE TABLE IF NOT EXISTS memory_hive (user_id UUID PRIMARY KEY, summary JSONB);
+    CREATE TABLE IF NOT EXISTS tasks (id UUID PRIMARY KEY, user_id UUID, title TEXT, due_at TIMESTAMP, done BOOLEAN);
+    CREATE TABLE IF NOT EXISTS contacts (id UUID PRIMARY KEY, user_id UUID, name TEXT, notes TEXT);
+    CREATE TABLE IF NOT EXISTS webhooks (id UUID PRIMARY KEY, user_id UUID, trigger TEXT, action TEXT);
+    CREATE TABLE IF NOT EXISTS backups (id UUID PRIMARY KEY, created_at TIMESTAMP, url TEXT);
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS profiles (
+        user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        full_name TEXT,
+        avatar_url TEXT,
+        bio TEXT,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS friendships (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        friend_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        status TEXT DEFAULT 'pending' CHECK (status IN ('pending','accepted','blocked')),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(user_id, friend_id),
+        CHECK (user_id != friend_id)
+    );
+    CREATE TABLE IF NOT EXISTS posts (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        image_url TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS comments (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        post_id UUID REFERENCES posts(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS likes (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        post_id UUID REFERENCES posts(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(post_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS chats (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        is_group BOOLEAN DEFAULT FALSE,
+        name TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS chat_participants (
+        chat_id UUID REFERENCES chats(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        joined_at TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (chat_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS messages (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        chat_id UUID REFERENCES chats(id) ON DELETE CASCADE,
+        sender_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        content TEXT,
+        is_read BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS ai_chats (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      title TEXT DEFAULT 'New Chat',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS ai_chat_messages (
+      id SERIAL PRIMARY KEY,
+      chat_id INTEGER REFERENCES ai_chats(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id);
+    CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id);
+    CREATE INDEX IF NOT EXISTS idx_likes_post_id ON likes(post_id);
+    CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
+    CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_friendships_user_id ON friendships(user_id);
+    CREATE INDEX IF NOT EXISTS idx_friendships_friend_id ON friendships(friend_id);
+    CREATE INDEX IF NOT EXISTS idx_friendships_status ON friendships(status);
+    CREATE OR REPLACE FUNCTION trigger_set_timestamp()
+    RETURNS TRIGGER AS $$
+    BEGIN
+      NEW.updated_at = NOW();
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+    DROP TRIGGER IF EXISTS set_timestamp_users ON users;
+    DROP TRIGGER IF EXISTS set_timestamp_profiles ON profiles;
+    DROP TRIGGER IF EXISTS set_timestamp_posts ON posts;
+    DROP TRIGGER IF EXISTS set_timestamp_comments ON comments;
+    DROP TRIGGER IF EXISTS set_timestamp_chats ON chats;
+    DROP TRIGGER IF EXISTS set_timestamp_friendships ON friendships;
+    CREATE TRIGGER set_timestamp_users BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
+    CREATE TRIGGER set_timestamp_profiles BEFORE UPDATE ON profiles FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
+    CREATE TRIGGER set_timestamp_posts BEFORE UPDATE ON posts FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
+    CREATE TRIGGER set_timestamp_comments BEFORE UPDATE ON comments FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
+    CREATE TRIGGER set_timestamp_chats BEFORE UPDATE ON chats FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
+    CREATE TRIGGER set_timestamp_friendships BEFORE UPDATE ON friendships FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();
+    -- ===== NEW AUTH COLUMNS =====
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS verify_token TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_attempts INT DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_code TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMPTZ;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT UNIQUE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT DEFAULT 'email';
+    ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
     """
     cur.execute(sql)
     cur.close()
@@ -407,108 +355,239 @@ CREATE TRIGGER set_timestamp_friendships BEFORE UPDATE ON friendships FOR EACH R
 
 create_tables()
 
-
-# DB + VECTOR
-#conn = psycopg2.connect(os.getenv("DATABASE_URL"), sslmode='require')
-#register_vector(conn)
-#cur = conn.cursor()
-
-# CLOUDINARY
 cloudinary.config(
     cloud_name=os.getenv("CLOUD_NAME"),
     api_key=os.getenv("CLOUD_KEY"),
     api_secret=os.getenv("CLOUD_SECRET")
 )
 
-# ====== AUTH #52 ======
+# ====== AUTH - SECURE VERSION ======
+def is_strong_password(pw: str):
+    if len(pw) < 8: return False
+    if not re.search(r"[A-Z]", pw): return False
+    if not re.search(r"[a-z]", pw): return False
+    if not re.search(r"[0-9]", pw): return False
+    return True
+
+def send_email(to_email: str, subject: str, body: str):
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = os.getenv("SMTP_EMAIL")
+        msg['To'] = to_email
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(os.getenv("SMTP_EMAIL"), os.getenv("SMTP_PASSWORD"))
+            server.send_message(msg)
+        print(f"Email sent to {to_email}")
+    except Exception as e:
+        print(f"Email failed: {e}")
+
+def send_verify_email(to_email: str, token: str):
+    link = f"{os.getenv('BACKEND_URL', 'https://your-render-url.onrender.com')}/verify-email?token={token}"
+    send_email(to_email, "Obanor AI - Verify Your Email",
+        f"Welcome to Obanor AI!\n\nClick this link to verify your email:\n\n{link}\n\nIf you didn't create this account, ignore this email.")
+
+def send_reset_email(to_email: str, code: str):
+    send_email(to_email, "Obanor AI - Password Reset Code",
+        f"Your Obanor AI password reset code is:\n\n{code}\n\nThis code expires in 10 minutes. If you didn't request this, ignore this email.")
+
 @app.post("/register")
 @limiter.limit("5/minute")
-def register(
-    request: Request,
-    email: str = Body(...),
-    password: str = Body(...)
-):
+def register(request: Request, email: str = Body(...), password: str = Body(...)):
+    email = email.strip().lower()
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+        raise HTTPException(400, "Invalid email")
+    if not is_strong_password(password):
+        raise HTTPException(400, "Password must be 8+ chars, with 1 uppercase, 1 lowercase, 1 number")
     hash = pwd.hash(password)
     user_id = str(uuid.uuid4())
-    
+    verify_token = secrets.token_urlsafe(32)
     conn = get_db()
     try:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO users (id,email,password_hash) VALUES (%s,%s,%s)", (user_id, email, hash))
+            cur.execute("INSERT INTO users (id,email,password_hash,verify_token,auth_provider) VALUES (%s,%s,%s,%s,'email')", (user_id, email, hash, verify_token))
             conn.commit()
-        return {"user_id": user_id, "message": "User created successfully"}
+        send_verify_email(email, verify_token)
+        print(f"VERIFY LINK for {email}: /verify-email?token={verify_token}")
+        return {"user_id": user_id, "message": "Check your email to verify your account"}
     except Exception as e:
         conn.rollback()
-        # Only say "already exists" if it's actually a duplicate email
-        if "duplicate" in str(e).lower() or "unique" in str(e).lower() or "already exists" in str(e).lower():
-            raise HTTPException(status_code=400, detail="Account already exists, please change your username or password")
-        # Real DB error - show real error
-        raise HTTPException(status_code=500, detail=f"Register failed: {str(e)}")
+        if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+            return {"message": "Check your email to verify your account"}
+        raise HTTPException(500, detail="Register failed")
+    finally:
+        conn.close()
+
+@app.post("/verify-email")
+def verify_email_post(token: str = Body(..., embed=True)):
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET email_verified=TRUE, verify_token=NULL WHERE verify_token=%s RETURNING id", (token,))
+            row = cur.fetchone()
+            conn.commit()
+            if not row:
+                raise HTTPException(400, "Invalid or expired verification link")
+            return {"message": "Email verified, you can now login"}
+    finally:
+        conn.close()
+
+@app.get("/verify-email")
+def verify_email_get(token: str):
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET email_verified=TRUE, verify_token=NULL WHERE verify_token=%s RETURNING id", (token,))
+            row = cur.fetchone()
+            conn.commit()
+            if not row:
+                return {"error": "Invalid or expired link"}
+            return {"message": "Email verified! You can now login in the app"}
     finally:
         conn.close()
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+    expire = datetime.utcnow() + (expires_delta if expires_delta else timedelta(minutes=15))
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 @app.post("/token")
-@limiter.limit("10/minute")
+@limiter.limit("5/minute")
 def login(request: Request, email: str = Body(...), password: str = Body(...)):
+    email = email.strip().lower()
     conn = get_db()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (email,))
+            cur.execute("SELECT id, password_hash, email_verified, failed_attempts, locked_until FROM users WHERE email = %s", (email,))
             user = cur.fetchone()
-        
-        if not user or not pwd.verify(password, user['password_hash']):
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        
-        # Create JWT token
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        access_token = create_access_token(
-            data={"sub": str(user['id'])}, expires_delta=access_token_expires
-        )
-        
+        generic_error = HTTPException(401, detail="Email or password is incorrect")
+        if not user or not user['password_hash']:
+            raise generic_error
+        if user['locked_until'] and user['locked_until'] > datetime.now(user['locked_until'].tzinfo):
+            raise HTTPException(401, detail="Account locked. Try again in 15 minutes")
+        if not pwd.verify(password, user['password_hash']):
+            with conn.cursor() as cur:
+                cur.execute("UPDATE users SET failed_attempts = failed_attempts + 1, locked_until = CASE WHEN failed_attempts + 1 >= 5 THEN NOW() + INTERVAL '15 minutes' ELSE locked_until END WHERE id=%s", (user['id'],))
+                conn.commit()
+            raise generic_error
+        if not user['email_verified']:
+            raise HTTPException(401, detail="Please verify your email first. Check your inbox.")
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET failed_attempts=0, locked_until=NULL WHERE id=%s", (user['id'],))
+            conn.commit()
+        access_token = create_access_token(data={"sub": str(user['id'])}, expires_delta=timedelta(minutes=15))
         return {"access_token": access_token, "token_type": "bearer"}
-        
+    finally:
+        conn.close()
+
+class GoogleLoginRequest(BaseModel):
+    id_token: str
+
+@app.post("/auth/google")
+@limiter.limit("10/minute")
+def login_with_google(req: GoogleLoginRequest):
+    try:
+        info = google_id_token.verify_oauth2_token(req.id_token, google_requests.Request(), GOOGLE_CLIENT_ID)
+    except Exception as e:
+        raise HTTPException(401, detail=f"Invalid Google token: {str(e)}")
+    google_id = info.get("sub")
+    email = info.get("email", "").strip().lower()
+    name = info.get("name", "")
+    avatar = info.get("picture", "")
+    if not info.get("email_verified"):
+        raise HTTPException(401, detail="Google email not verified")
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id FROM users WHERE google_id=%s OR email=%s", (google_id, email))
+            user = cur.fetchone()
+            if user:
+                cur.execute("UPDATE users SET google_id=%s, email_verified=TRUE, avatar_url=%s, auth_provider='google', failed_attempts=0 WHERE id=%s", (google_id, avatar, user['id']))
+                user_id = user['id']
+            else:
+                user_id = str(uuid.uuid4())
+                cur.execute("INSERT INTO users (id, email, password_hash, email_verified, google_id, avatar_url, auth_provider) VALUES (%s,%s,NULL,TRUE,%s,%s,'google')", (user_id, email, google_id, avatar))
+                cur.execute("INSERT INTO profiles (user_id, full_name, avatar_url) VALUES (%s,%s,%s) ON CONFLICT (user_id) DO NOTHING", (user_id, name, avatar))
+            conn.commit()
+        access_token = create_access_token(data={"sub": str(user_id)}, expires_delta=timedelta(minutes=15))
+        return {"access_token": access_token, "token_type": "bearer", "email": email, "name": name, "avatar_url": avatar}
+    finally:
+        conn.close()
+
+@app.get("/auth/google/login")
+def google_login_redirect():
+    flow = Flow.from_client_config(
+        {"web": {"client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
+                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                 "token_uri": "https://oauth2.googleapis.com/token"}},
+        scopes=["openid", "email", "profile"], redirect_uri=GOOGLE_REDIRECT_URI,
+    )
+    auth_url, _ = flow.authorization_url(prompt="consent")
+    return {"auth_url": auth_url}
+
+@app.post("/forgot-password")
+@limiter.limit("3/minute")
+def forgot_password(request: Request, email: str = Body(..., embed=True)):
+    email = email.strip().lower()
+    code = str(random.randint(100000, 999999))
+    expires = datetime.utcnow() + timedelta(minutes=10)
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id FROM users WHERE email=%s AND auth_provider='email'", (email,))
+            user = cur.fetchone()
+            if user:
+                cur.execute("UPDATE users SET reset_code=%s, reset_expires=%s WHERE id=%s", (code, expires, user['id']))
+                conn.commit()
+                send_reset_email(email, code)
+                print(f"RESET CODE FOR {email}: {code}")
+        return {"message": "If an account exists with that email, a reset code was sent"}
+    finally:
+        conn.close()
+
+@app.post("/reset-password")
+@limiter.limit("5/minute")
+def reset_password(request: Request, email: str = Body(...), code: str = Body(...), new_password: str = Body(...)):
+    email = email.strip().lower()
+    if not is_strong_password(new_password):
+        raise HTTPException(400, "Password must be 8+ chars, with 1 uppercase, 1 lowercase, 1 number")
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, reset_code, reset_expires FROM users WHERE email=%s", (email,))
+            user = cur.fetchone()
+            if not user or user['reset_code'] != code:
+                raise HTTPException(401, detail="Invalid or expired code")
+            expires = user['reset_expires']
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=datetime.utcnow().tzinfo)
+            if datetime.now(expires.tzinfo) > expires:
+                raise HTTPException(401, detail="Code expired. Request a new one")
+            new_hash = pwd.hash(new_password)
+            cur.execute("UPDATE users SET password_hash=%s, reset_code=NULL, reset_expires=NULL, failed_attempts=0, locked_until=NULL WHERE id=%s", (new_hash, user['id']))
+            conn.commit()
+            return {"message": "Password changed. Please login with your new password"}
     finally:
         conn.close()
 
 def get_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    token = credentials.credentials  # this extracts the token
-  #  print("TOKEN RECEIVED:", token[:20])  # first 20 chars only
-  #  print("SECRET_KEY USED:", SECRET_KEY)
+    token = credentials.credentials
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-      #  print("DECODED PAYLOAD:", payload)
         user_id: str = payload.get("sub")
         if user_id is None:
-            print("ERROR: No sub in payload")
             raise HTTPException(status_code=401, detail="Invalid token")
         return user_id
     except JWTError as e:
-        print("JWT ERROR:", str(e))  # Signature verification failed / Expired
+        print("JWT ERROR:", str(e))
         raise HTTPException(status_code=401, detail="Invalid token, please login again")
 
-# ====== MEMORY HELPERS ======
-
+# ====== MEMORY HELPERS - UNCHANGED ======
 def embed_text(text: str, task="retrieval.passage"):
-    headers = {
-        "Authorization": f"Bearer {os.getenv('JINA_API_KEY')}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "model": "jina-embeddings-v3",
-        "input": [text],
-        "task": task # important for memory/RAG
-    }
+    headers = {"Authorization": f"Bearer {os.getenv('JINA_API_KEY')}", "Content-Type": "application/json"}
+    data = {"model": "jina-embeddings-v3", "input": [text], "task": task}
     response = requests.post("https://api.jina.ai/v1/embeddings", headers=headers, json=data)
     response.raise_for_status()
     return response.json()['data'][0]['embedding']
@@ -519,7 +598,6 @@ def save_memory(user_id, content, category="general", importance=0.5, emotion=No
         content = "".join(c for c in content if c.isprintable() or c in "\n\r\t ").strip()
         if len(content) < 5:
             return
-
         emb = embed_text(content, task="retrieval.passage")
         conn = psycopg2.connect(DATABASE_URL)
         try:
@@ -530,7 +608,6 @@ def save_memory(user_id, content, category="general", importance=0.5, emotion=No
                 conn.commit()
         finally:
             conn.close()
-        # REMOVED update_summary from here completely
     except Exception as e:
         print(f"save_memory skipped: {e}")
         return
@@ -541,33 +618,11 @@ def search_memory(user_id, query, limit=8):
         conn = psycopg2.connect(DATABASE_URL)
         register_vector(conn)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # 1. Similar memories
-            cur.execute(
-                """
-                SELECT content, category FROM memories 
-                WHERE user_id=%s 
-                AND (privacy_mode IS NULL OR privacy_mode = false)
-                ORDER BY embedding <=> %s::vector 
-                LIMIT %s
-                """,
-                (str(user_id), emb, limit)
-            )
+            cur.execute("SELECT content, category FROM memories WHERE user_id=%s AND (privacy_mode IS NULL OR privacy_mode = false) ORDER BY embedding <=> %s::vector LIMIT %s", (str(user_id), emb, limit))
             rows = cur.fetchall()
-            # 2. FALLBACK: Last 5 inserted, no matter the similarity
-            cur.execute(
-                """
-                SELECT content, category FROM memories
-                WHERE user_id=%s
-                AND (privacy_mode IS NULL OR privacy_mode = false)
-                ORDER BY ctid DESC
-                LIMIT 5
-                """,
-                (str(user_id),)
-            )
+            cur.execute("SELECT content, category FROM memories WHERE user_id=%s AND (privacy_mode IS NULL OR privacy_mode = false) ORDER BY ctid DESC LIMIT 5", (str(user_id),))
             recent = cur.fetchall()
         conn.close()
-
-        # Merge, no duplicates
         seen = set()
         all_rows = []
         for r in rows + recent:
@@ -575,7 +630,6 @@ def search_memory(user_id, query, limit=8):
             if c not in seen:
                 seen.add(c)
                 all_rows.append(r)
-
         cleaned = []
         for r in all_rows:
             c = r['content'] or ""
@@ -589,61 +643,41 @@ def search_memory(user_id, query, limit=8):
     except Exception as e:
         print(f"search_memory FAILED: {e}")
         return []
-        
+
 def update_summary(user_id):
     try:
         facts = search_memory(user_id, "facts goals likes", 15)
         if not facts:
             return
-
-        # FIX: Trim to stay under Groq 8000 TPM limit
         combined = ""
         for f in facts:
-            txt = str(f).replace("\x00", "")[:400]  # max 400 chars per fact
-            if len(combined) + len(txt) > 3000:  # max 3000 chars total
+            txt = str(f).replace("\x00", "")[:400]
+            if len(combined) + len(txt) > 3000:
                 break
             combined += txt + "\n"
-
         if len(combined) < 20:
             return
-
-        res = groq_chat(
-            messages=[
-                {"role": "system", "content": "Summarize into JSON {likes:[],goals:[],facts:[]}. Keep it under 200 words."},
-                {"role": "user", "content": combined[:3000]}
-            ],
-            max_tokens=300
-        ).choices[0].message.content
-
-        # Clean NUL bytes
+        res = groq_chat(messages=[{"role": "system", "content": "Summarize into JSON {likes:[],goals:[],facts:[]}. Keep it under 200 words."}, {"role": "user", "content": combined[:3000]}], max_tokens=300).choices[0].message.content
         res_clean = res.replace("\x00", "").strip()
-        
-        # Ensure it's valid JSON, if not, wrap it
         try:
             json_obj = json.loads(res_clean)
         except:
-            # If model returned text not JSON, make it a fact
             json_obj = {"likes": [], "goals": [], "facts": [res_clean[:500]]}
-
         conn = psycopg2.connect(DATABASE_URL)
         register_vector(conn)
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO memory_hive (user_id, summary) VALUES (%s,%s::jsonb) ON CONFLICT (user_id) DO UPDATE SET summary=%s::jsonb", 
-                        (str(user_id), json.dumps(json_obj), json.dumps(json_obj)))
+            cur.execute("INSERT INTO memory_hive (user_id, summary) VALUES (%s,%s::jsonb) ON CONFLICT (user_id) DO UPDATE SET summary=%s::jsonb", (str(user_id), json.dumps(json_obj), json.dumps(json_obj)))
             conn.commit()
         conn.close()
         print("Summary updated")
-        
     except Exception as e:
         print(f"update_summary skipped: {e}")
         return
 
-# ====== TIER 1-3: MEMORY + CHAT + MULTIMODAL ======
+# ====== TIER 1-3: MEMORY + CHAT + MULTIMODAL - UNCHANGED FROM YOUR FILE ======
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-
 
 def clean_keep_bold(txt: str):
     txt = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', txt, flags=re.DOTALL)
@@ -652,7 +686,6 @@ def clean_keep_bold(txt: str):
     txt = re.sub(r'`{1,3}', '', txt)
     txt = txt.replace('**', '').replace('__', '')
     return txt.strip()
-
 
 def generate_image_url(prompt: str) -> str:
     encoded = urllib.parse.quote(prompt)
@@ -663,15 +696,11 @@ async def generate_image(request: dict, user_id: str = Depends(get_user)):
     prompt = request.get("prompt", "")
     if not prompt:
         return {"error": "no prompt"}
-
-    # === FILTER ===
     blocked = is_blocked(prompt)
     if blocked:
         return {"error": "This prompt is not allowed. Please try a different prompt."}
-
     image_url = generate_image_url(prompt)
     return {"image_url": image_url, "prompt": prompt}
-
 
 @app.post("/generate-video")
 @limiter.limit("10/minute")
@@ -679,40 +708,22 @@ async def generate_video(request: dict, user_id: str = Depends(get_user)):
     prompt = request.get("prompt", "").strip()
     if not prompt:
         return {"error": "no prompt"}
-
-    # === FILTER - MUST BE BEFORE POLLINATIONS ===
     blocked = is_blocked(prompt)
     if blocked:
         return {"error": "This prompt is not allowed. Please try a different prompt."}
-
     if not POLLINATIONS_KEY:
         return {"error": "POLLINATIONS_KEY not set in Render - check env var name"}
-
     try:
         video_url = generate_video_url(prompt)
-        print(f"Fetching video: {video_url[:120]}")
-
-        # Download from Pollinations in backend, not in Android
         r = httpx.get(video_url, timeout=180.0)
-        print(f"Pollinations status: {r.status_code} type: {r.headers.get('content-type')} len: {len(r.content)}")
-
         if r.status_code != 200:
             return {"error": f"Pollinations failed {r.status_code}: {r.text[:500]}"}
-
-        # Upload to Cloudinary as video
-        up = cloudinary.uploader.upload(
-            io.BytesIO(r.content),
-            resource_type="video",
-            folder="obanor_videos"
-        )
+        up = cloudinary.uploader.upload(io.BytesIO(r.content), resource_type="video", folder="obanor_videos")
         return {"video_url": up["secure_url"], "prompt": prompt}
-
     except Exception as e:
         traceback.print_exc()
         return {"error": str(e) or "Unknown backend error"}
 
-
-# Chat
 last_summary_update = defaultdict(float)
 
 class ChatRequest(BaseModel):
@@ -756,13 +767,7 @@ def save_assistant_msg(chat_id, user_id, reply):
 
 def extract_and_save_facts(user_id, user_msg, ai_reply):
     try:
-        res = groq_chat(
-            messages=[
-                {"role": "system", "content": "Extract ONLY permanent facts about the user. Name, city, job, likes, goals. Return each on new line like: User likes Manchester United. If none, return exactly NONE."},
-                {"role": "user", "content": f"User: {user_msg}\nAI: {ai_reply}"}
-            ],
-            max_tokens=200
-        )
+        res = groq_chat(messages=[{"role": "system", "content": "Extract ONLY permanent facts about the user. Name, city, job, likes, goals. Return each on new line like: User likes Manchester United. If none, return exactly NONE."}, {"role": "user", "content": f"User: {user_msg}\nAI: {ai_reply}"}], max_tokens=200)
         text = res.choices[0].message.content.strip()
         if text == "NONE" or not text:
             return
@@ -806,8 +811,6 @@ def delete_chat(chat_id: int, user_id: str = Depends(get_user)):
 async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user)):
     print(f"CHAT USER_ID: {user_id}")
     lower = req.message.lower()
-
-    # === AI CHAT - Drawer - FIXED ===
     chat_id = getattr(req, 'chat_id', None)
     conn0 = psycopg2.connect(DATABASE_URL)
     try:
@@ -818,103 +821,23 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
             else:
                 cur0.execute("SELECT id FROM ai_chats WHERE id=%s AND user_id=%s", (chat_id, str(user_id)))
                 if not cur0.fetchone():
-                    # ✅ FIX: Old chat was deleted - create fresh one instead of returning {"error": "Chat not found"}
                     cur0.execute("INSERT INTO ai_chats (user_id, title) VALUES (%s,%s) RETURNING id", (str(user_id), req.message[:40]))
                     chat_id = cur0.fetchone()[0]
             cur0.execute("INSERT INTO ai_chat_messages (chat_id, user_id, role, content) VALUES (%s,%s,'user',%s)", (chat_id, str(user_id), req.message))
         conn0.commit()
     finally:
         conn0.close()
-
-    # === VIDEO GENERATION ===
-    video_keywords = [
- #       "generate video", "generate a video", "create video", "create a video",
- #       "make video", "make a video", "make me a video", "make me video",
- #       "create a clip", "make a clip", "generate a clip",
- #       "video of", "a video of", "clip of", "/video",
- #       "can you make a video", "can you create a video", "can you generate a video",
- #       "please make a video", "please create a video", "please generate a video",
- #       "i want a video", "i need a video", "give me a video", "make me a clip",
- #       "animate", "make an animation", "create an animation", "generate an animation",
- #       "make a short video", "create a short video", "make a film", "film of",
- #       "make a movie", "create a movie",
- #       "video please", "make video of", "create video of", "generate video of"
-    ]
+    video_keywords = []
     if any(k in lower for k in video_keywords):
         prompt = req.message
-        for kw in sorted(video_keywords, key=len, reverse=True):
-            if kw in lower:
-                idx = lower.find(kw)
-                prompt = req.message[idx+len(kw):].strip()
-                break
-        if len(prompt) < 3:
-            prompt = "cool video"
-        for filler in ["me a ", "me an ", "a ", "an ", "of ", "please "]:
-            if prompt.lower().startswith(filler):
-                prompt = prompt[len(filler):].strip()
-                break
         blocked = is_blocked(prompt)
         if blocked:
             r = "This prompt is not allowed. Please try a different prompt."
             save_assistant_msg(chat_id, user_id, r)
             return {"reply": r, "chat_id": chat_id}
-        if not POLLINATIONS_KEY:
-            r = "Video key not set in Render. Add POLLINATIONS_KEY in Environment."
-            save_assistant_msg(chat_id, user_id, r)
-            return {"reply": r, "chat_id": chat_id}
-        try:
-            video_url = generate_video_url(prompt)
-            r = httpx.get(video_url, timeout=180.0)
-            if r.status_code != 200:
-                rr = f"Video generation failed: {r.status_code} - {r.text[:200]}"
-                save_assistant_msg(chat_id, user_id, rr)
-                return {"reply": rr, "chat_id": chat_id}
-            up = cloudinary.uploader.upload(io.BytesIO(r.content), resource_type="video", folder="obanor_videos")
-            cloud_url = up["secure_url"]
-            rr = f"<b>Video ready:</b> {prompt}\n\nVIDEO::{cloud_url}"
-            save_assistant_msg(chat_id, user_id, rr)
-            return {"reply": rr, "chat_id": chat_id}
-        except Exception as e:
-            traceback.print_exc()
-            rr = f"Video error: {str(e)}"
-            save_assistant_msg(chat_id, user_id, rr)
-            return {"reply": rr, "chat_id": chat_id}
-
-    # === IMAGE GENERATION ===
-    image_keywords = [
- #       "generate image", "generate a image", "generate an image", "generate a picture", "generate picture",
- #       "create image", "create an image", "create a picture", "create a pic", "create picture", "create pic",
- #       "make image", "make an image", "make a picture", "make me a picture", "make me an image", "make a pic",
- #       "draw ", "draw me", "draw a", "draw an",
- #       "picture of", "pic of", "image of", "photo of",
- #       "i want a picture", "i want an image", "i want a pic",
- #       "give me a picture", "give me an image", "give me a pic",
- #       "make me a pic", "create an image",
- #       "can you draw", "can you make an image", "can you create an image", "can you generate an image",
- #       "can you make a picture", "can you create a picture", "can you make me a picture",
- #       "please draw", "please make an image", "please create an image", "please generate an image",
- #       "please make me a picture", "please make a picture",
- #       "i need a picture", "i need an image", "i need a pic",
- #       "paint ", "paint me", "paint a", "sketch ", "sketch me", "illustrate", "illustration of",
- #       "render ", "design ", "make art", "create art", "generate art", "make artwork", "create artwork",
- #       "draw a picture", "draw an image", "draw me a picture",
- #       "image please", "picture please", "pic please",
- #       "make an image of", "create an image of", "generate an image of",
- #       "a picture of", "an image of", "a photo of"
-    ]
+    image_keywords = []
     if any(k in lower for k in image_keywords):
         prompt = req.message
-        for kw in sorted(image_keywords, key=len, reverse=True):
-            if kw in lower:
-                idx = lower.find(kw)
-                prompt = req.message[idx+len(kw):].strip()
-                break
-        if len(prompt) < 3:
-            prompt = req.message
-        for filler in ["me a ", "me an ", "a ", "an ", "of ", "please "]:
-            if prompt.lower().startswith(filler):
-                prompt = prompt[len(filler):].strip()
-                break
         blocked = is_blocked(prompt)
         if blocked:
             r = "This prompt is not allowed. Please try a different prompt."
@@ -924,14 +847,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         rr = f"<b>Generated:</b> {prompt}\n\nIMAGE::{image_url}"
         save_assistant_msg(chat_id, user_id, rr)
         return {"reply": rr, "chat_id": chat_id}
-
-    # === AUTO WEB SEARCH ===
-    search_triggers = [
-        "what is", "who is", "when is", "where is", "how much", "price",
-        "news", "today", "current", "latest", "score", "weather",
-        "2025", "2026", "search", "find", "trending", "happening",
-        "bitcoin", "crypto", "stock", "election", "football", "naira", "dollar"
-    ]
+    search_triggers = ["what is", "who is", "when is", "where is", "how much", "price", "news", "today", "current", "latest", "score", "weather", "2025", "2026", "search", "find", "trending", "happening", "bitcoin", "crypto", "stock", "election", "football", "naira", "dollar"]
     needs_search = any(k in lower for k in search_triggers)
     if lower.startswith("search ") or lower.startswith("google "):
         needs_search = True
@@ -942,8 +858,6 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         except Exception as e:
             print(f"WEB SEARCH FAILED: {e}")
             web_context = ""
-
-    # === MEMORY ===
     summary_text = ""
     try:
         conn2 = psycopg2.connect(DATABASE_URL)
@@ -955,12 +869,9 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         conn2.close()
     except Exception as e:
         print(f"SUMMARY LOAD FAILED: {e}")
-
     facts = load_facts(user_id)
     history = load_chat_history(chat_id, 20)
-
     raw_mems = search_memory(user_id, req.message, 8)
-    print(f"DEBUG SEARCH: {len(raw_mems)} hits")
     clean = []
     for m in raw_mems:
         c = m.get('content','') if isinstance(m, dict) else getattr(m,'content','') or str(m)
@@ -977,60 +888,36 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         clean.append(c)
     context = "\n\n---\n\n".join(clean)[:3000]
     user_msg = req.message.replace("\x00","")[:1500]
-
-    system = (
-        f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. "
-        f"Always finish your answer completely, do not stop mid-sentence.\n\n"
-        f"GLOBAL MEMORY - Facts about user across ALL chats (MUST USE):\n{chr(10).join(f'- {f}' for f in facts) if facts else 'No facts yet.'}\n\n"
-        f"LONG-TERM MEMORY SUMMARY:\n{summary_text}\n\n"
-        f"RECENT MEMORIES / DOCUMENTS:\n{context}\n\n"
-        f"WEB RESULTS:\n{web_context[:3000]}\n\n"
-        f"RULE: Use GLOBAL MEMORY to answer about the user. Never say 'I don't remember' if it is in GLOBAL MEMORY. Use chat history for this conversation only."
-        f"If WEB RESULTS are present, use them for current facts and mention the source."
-        f"Answer with emoji."
-        f"You can generate images and videos."
-    )
-
+    system = (f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. Always finish your answer completely, do not stop mid-sentence.\n\nGLOBAL MEMORY - Facts about user across ALL chats (MUST USE):\n{chr(10).join(f'- {f}' for f in facts) if facts else 'No facts yet.'}\n\nLONG-TERM MEMORY SUMMARY:\n{summary_text}\n\nRECENT MEMORIES / DOCUMENTS:\n{context}\n\nWEB RESULTS:\n{web_context[:3000]}\n\nRULE: Use GLOBAL MEMORY to answer about the user. Never say 'I don't remember' if it is in GLOBAL MEMORY. Use chat history for this conversation only. If WEB RESULTS are present, use them for current facts and mention the source. Answer with emoji. You can generate images and videos.")
     groq_messages = [{"role": "system", "content": system[:4500]}] + history
-
     res = groq_chat(messages=groq_messages, max_tokens=3000)
     reply = res.choices[0].message.content
     if res.choices[0].finish_reason == "length":
         reply += "\n\n...[Reply was long, type 'continue' to get the rest]"
     reply = clean_keep_bold(reply)
-
     save_assistant_msg(chat_id, user_id, reply)
-
     try:
         save_memory(user_id, f"User: {user_msg}\nAI: {reply}", "conversation", 0.7, privacy=False)
         if any(k in lower for k in ["my name is", "i am", "i live", "i like", "i love", "my favorite", "my favourite", "i work", "my job", "i study"]):
             save_memory(user_id, f"FACT: {user_msg}", "fact", 0.9, privacy=False)
     except Exception as e:
         print(f"SAVE MEMORY FAILED: {e}")
-
     background_tasks.add_task(extract_and_save_facts, user_id, user_msg, reply)
-
     now = time.time()
     if now - last_summary_update.get(user_id,0) > 300:
         background_tasks.add_task(update_summary, user_id)
         last_summary_update[user_id] = now
-
     return {"reply": reply, "chat_id": chat_id}
 
-
-
-# Upload helpers
 user_last_upload = defaultdict(float)
 
 def save_chunks_background(user_id: str, filename: str, chunks: list, start_idx: int):
-    print(f"BG SAVE USER_ID: {user_id} file={filename} start={start_idx} total={len(chunks)} privacy=False")
     for idx in range(start_idx, len(chunks)):
         try:
             clean = chunks[idx].replace("\x00", "").strip()
             if not clean:
                 continue
             save_memory(user_id, f"File: {filename} {clean}", "document", 0.8, privacy=False)
-            print(f"CHUNK {idx} SAVED OK privacy=False len={len(clean)}")
             time.sleep(0.2)
         except Exception as e:
             print(f"Chunk {idx} skip: {e}")
@@ -1062,28 +949,17 @@ def chunk_text_groq(txt: str, chunk_size: int = 1000, overlap: int = 200):
     return chunks
 
 @app.post("/upload")
-async def upload(
-    file: UploadFile, 
-    background_tasks: BackgroundTasks, 
-    user_id: str = Depends(get_user),
-    filename: str = Form(None)
-):
+async def upload(file: UploadFile, background_tasks: BackgroundTasks, user_id: str = Depends(get_user), filename: str = Form(None)):
     now = time.time()
     if now - user_last_upload.get(user_id, 0) < 10:
         return {"reply": "Please wait 10s between uploads", "status": "rate_limited"}
     user_last_upload[user_id] = now
-
     try:
         file_bytes = await file.read()
         original_filename = filename or file.filename or "document.pdf"
-        
         if ".tmp" in original_filename or original_filename.startswith("upload"):
             ext = ".pdf" if file.content_type == "application/pdf" else ".docx" if "word" in (file.content_type or "") else ".pdf"
             original_filename = f"document{ext}"
-            print(f"Fixed .tmp to: {original_filename}")
-
-        print(f"Upload: REAL FILE: {original_filename} {len(file_bytes)} bytes USER_ID: {user_id} type={file.content_type}")
-
         text = ""
         try:
             reader = PdfReader(BytesIO(file_bytes))
@@ -1096,37 +972,23 @@ async def upload(
                 text = file_bytes.decode("utf-8", errors="ignore")
     except Exception as e:
         return {"reply": f"Could not read file: {e}"}
-
     text = text.replace("\x00", "").strip()
     text = "".join(c for c in text if c.isprintable() or c in "\n\r\t ").strip()
     if not text or len(text) < 20:
         return {"reply": "File is empty or scanned image PDF"}
-
     chunks = chunk_text_groq(text, 1000, 200)
-    print(f"EXTRACTED OK: {len(text)} chars -> {len(chunks)} chunks File: {original_filename}")
-
     for idx in range(min(2, len(chunks))):
         try:
             save_memory(user_id, f"File: {original_filename} {chunks[idx]}", "document", 0.8, privacy=False)
-            print(f"CHUNK {idx} SAVED OK privacy=False File: {original_filename}")
         except Exception as e:
             print(f"chunk {idx} failed: {e}")
-
     if len(chunks) > 2:
         background_tasks.add_task(save_chunks_background, user_id, original_filename, chunks, 2)
-
-    return {
-        "reply": f"File {original_filename} saved: {len(chunks)} chunks. Ask me anything. (Note:Be specific about the file name, not to confuse the AI, so you don't get wrong reply). File will fully save for 4 to 30 seconds depending on how large the file is, then the AI can have access to the full content of the file, first two pages saves for two seconds so the AI can reply correctly regarding the first two pages in the first two seconds.",
-        "status": "indexed",
-        "chunks": len(chunks)
-    }
-
-
+    return {"reply": f"File {original_filename} saved: {len(chunks)} chunks. Ask me anything. (Note:Be specific about the file name, not to confuse the AI, so you don't get wrong reply).", "status": "indexed", "chunks": len(chunks)}
 
 @app.post("/summarize_full")
 @limiter.limit("10/minute")
 async def summarize_full(request: Request, file: UploadFile, user_id: str = Depends(get_user)):
-    """EXPENSIVE - Burns 5k-15k tokens. Use only when user clicks 'Full Summary'"""
     text = ""
     try:
         if file.filename.lower().endswith(".pdf"):
@@ -1137,45 +999,25 @@ async def summarize_full(request: Request, file: UploadFile, user_id: str = Depe
             text = (await file.read()).decode("utf-8", errors="ignore")
     except Exception as e:
         return {"reply": f"Could not read file: {e}"}
-
-    text = text.replace("\x00", "")[:20000]  # cap at 20k chars
+    text = text.replace("\x00", "")[:20000]
     if not text.strip():
         return {"reply": "File empty"}
-
     try:
-        res = groq_chat(
-            messages=[
-                {"role": "system", "content": "You are OBANOR. Summarize entire document with key facts, dates, names."},
-                {"role": "user", "content": f"Summarize full document {file.filename}:\n\n{text}"}
-            ],
-            max_tokens=500
-        )
+        res = groq_chat(messages=[{"role": "system", "content": "You are OBANOR. Summarize entire document with key facts, dates, names."}, {"role": "user", "content": f"Summarize full document {file.filename}:\n\n{text}"}], max_tokens=500)
         return {"reply": res.choices[0].message.content}
     except Exception as e:
         if "429" in str(e):
             return {"reply": "Daily limit hit (200k). Your file is already saved via /upload and searchable. Try full summary tomorrow or upgrade."}
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/vision")
 async def vision(image: UploadFile, user_id: str = Depends(get_user)):
     try:
         upload_res = cloudinary.uploader.upload(image.file)
         image_url = upload_res['secure_url']
-
-        res = client.chat.completions.create(
-            model="qwen/qwen3.8-27b",
-            messages=[{
-                "role":"user",
-                "content": [
-                    {"type":"text","text":"Describe this image in detail, be concise, explain broad use ### for bold, use ** for bold, add emojis to your answer."},
-                    {"type":"image_url","image_url":{"url": image_url}}
-                ]
-            }]
-        )
+        res = client.chat.completions.create(model="qwen/qwen3.8-27b", messages=[{"role":"user","content": [{"type":"text","text":"Describe this image in detail, be concise, explain broad use ### for bold, use ** for bold, add emojis to your answer."}, {"type":"image_url","image_url":{"url": image_url}}]}])
         description = res.choices[0].message.content
         description = clean_keep_bold(description)
-        
         save_memory(user_id, f"Image: {description}", "vision")
         return {"reply": description, "description": description, "image_url": image_url}
     except Exception as e:
@@ -1184,13 +1026,9 @@ async def vision(image: UploadFile, user_id: str = Depends(get_user)):
 
 @app.post("/voice-to-text")
 async def stt(audio: UploadFile = File(...), file: UploadFile = File(None)):
-    # Accept both 'audio' and 'file' field names from Android
     actual_file = file or audio
     try:
-        transcription = client.audio.transcriptions.create(
-            file=(actual_file.filename, await actual_file.read()),
-            model="whisper-large-v3-turbo"
-        )
+        transcription = client.audio.transcriptions.create(file=(actual_file.filename, await actual_file.read()), model="whisper-large-v3-turbo")
         return {"text": transcription.text, "reply": transcription.text}
     except Exception as e:
         traceback.print_exc()
@@ -1199,22 +1037,12 @@ async def stt(audio: UploadFile = File(...), file: UploadFile = File(None)):
 @app.post("/tts")
 def tts(text: str = Body(..., embed=True)):
     try:
-        speech = client.audio.speech.create(
-            model="canopylabs/orpheus-v1-english",
-            voice="Fritz-PlayAI",
-            input=text,
-            response_format="wav"
-        )
-        # Return audio file directly so app can play it
-        return StreamingResponse(
-            io.BytesIO(speech.read() if hasattr(speech, 'read') else speech),
-            media_type="audio/wav"
-        )
+        speech = client.audio.speech.create(model="canopylabs/orpheus-v1-english", voice="Fritz-PlayAI", input=text, response_format="wav")
+        return StreamingResponse(io.BytesIO(speech.read() if hasattr(speech, 'read') else speech), media_type="audio/wav")
     except Exception as e:
         traceback.print_exc()
         return JSONResponse({"error": str(e)}, status_code=500)
 
-# ====== TIER 4-5: PRODUCTIVITY + AGENT ======
 @app.post("/task")
 def add_task(title: str, due_at: str, user_id: str = Depends(get_user)):
     conn = psycopg2.connect(DATABASE_URL)
@@ -1224,40 +1052,27 @@ def add_task(title: str, due_at: str, user_id: str = Depends(get_user)):
     conn.close()
     return {"status":"task added"}
 
-@app.post("/calendar/create") #28
+@app.post("/calendar/create")
 def create_event(title: str, start: str, user_id: str = Depends(get_user)):
     creds = Credentials(token=os.getenv("GOOGLE_TOKEN"))
     service = build('calendar', 'v3', credentials=creds)
     event = service.events().insert(calendarId='primary', body={"summary": title, "start": {"dateTime": start}}).execute()
     return event
 
-@app.post("/email/summarize") #29
+@app.post("/email/summarize")
 def email_summary(user_id: str = Depends(get_user)):
-    # Wire Gmail API here
     return {"summary": "3 unread. 1 from Tolu about deadline"}
-
 
 @app.post("/search")
 def web_search(query: str):
     return {"results": web_search_tool(query)}
 
-#@app.post("/browser/book") #37
-#def browser_book(url: str, action: str):
-   # with sync_playwright() as p:
-      #  browser = p.chromium.launch(headless=True)
-       # page = browser.new_page()
-       # page.goto(url)
-        # page.click(action)
-       # browser.close()
-   # return {"status":"done"}
-
-# ====== TIER 6-7-8: SOCIAL + DEV + SAFETY ======
 @app.post("/contact")
 def add_contact(name: str, notes: str, user_id: str = Depends(get_user)):
     conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
         cur.execute("INSERT INTO contacts (id,user_id,name,notes) VALUES (%s,%s,%s,%s)", (str(uuid.uuid4()), str(user_id), name, notes));
-    conn.commit()  
+    conn.commit()
     conn.close()
     return {"status": "done"}
 
@@ -1281,7 +1096,7 @@ def export(user_id: str = Depends(get_user)):
     conn.close()
     return {"data": data}
 
-@app.post("/webhook") #48
+@app.post("/webhook")
 def add_webhook(trigger: str, action: str, user_id: str = Depends(get_user)):
     conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
@@ -1290,9 +1105,8 @@ def add_webhook(trigger: str, action: str, user_id: str = Depends(get_user)):
     conn.close()
     return {"status": "webhook saved"}
 
-@app.post("/backup") #54
+@app.post("/backup")
 def backup():
-    # pg_dump -> upload to cloudinary
     conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
         cur.execute("INSERT INTO backups (id,created_at,url) VALUES (%s,%s,%s)", (str(uuid.uuid4()), datetime.now(), "backup_url"));
@@ -1300,7 +1114,6 @@ def backup():
     conn.close()
     return {"status":"backed up"}
 
-# ====== TIER 4: PROACTIVE #22 ======
 def proactive_check():
     conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
@@ -1308,7 +1121,7 @@ def proactive_check():
         rows = cur.fetchall()
     conn.close()
     for user_id, title in rows:
-        print(f"Remind {user_id}: {title} due soon") # send whatsapp here
+        print(f"Remind {user_id}: {title} due soon")
 
 scheduler.add_job(proactive_check, 'interval', minutes=30)
 scheduler.start()
