@@ -487,7 +487,7 @@ class GoogleLoginRequest(BaseModel):
 
 @app.post("/auth/google")
 @limiter.limit("10/minute")
-def login_with_google(req: GoogleLoginRequest):
+def login_with_google(request: Request, req: GoogleLoginRequest):
     try:
         info = google_id_token.verify_oauth2_token(req.id_token, google_requests.Request(), GOOGLE_CLIENT_ID)
     except Exception as e:
