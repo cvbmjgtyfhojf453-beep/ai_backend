@@ -907,7 +907,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         f"If WEB RESULTS are present, use them for current facts and mention the source. "
         f"Answer with emoji. "
         f"You can generate images and videos."
-        f"If a user ask for an image use pollinations."
+        f"If a user ask for an image never browse the web or internet for an image link."
         f"you can search the web, never say you cannot search the web."
     )
     groq_messages = [{"role": "system", "content": system[:4500]}] + history
