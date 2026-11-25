@@ -888,7 +888,27 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         clean.append(c)
     context = "\n\n---\n\n".join(clean)[:3000]
     user_msg = req.message.replace("\x00","")[:1500]
-    system = (f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. Always finish your answer completely, do not stop mid-sentence.\n\nGLOBAL MEMORY - Facts about user across ALL chats (MUST USE):\n{chr(10).join(f'- {f}' for f in facts) if facts else 'No facts yet.'}\n\nLONG-TERM MEMORY SUMMARY:\n{summary_text}\n\nRECENT MEMORIES / DOCUMENTS:\n{context}\n\nWEB RESULTS:\n{web_context[:3000]}\n\nRULE: Use GLOBAL MEMORY to answer about the user. Never say 'I don't remember' if it is in GLOBAL MEMORY. Use chat history for this conversation only. If WEB RESULTS are present, use them for current facts and mention the source. Answer with emoji. You can search the web for information and you can generate real images and videos. When user asks for an image/video, the system will generate it.")
+    system = (
+        f"You are {req.persona}. "
+        f"Roast {req.roast_level}/10. "
+        f"Name OBANOR. "
+        f"Always finish your answer completely, do not stop mid-sentence.\n\n"
+        f"GLOBAL MEMORY - Facts about user across ALL chats (MUST USE):\n"
+        f"{chr(10).join(f'- {f}' for f in facts) if facts else 'No facts yet.'}\n\n"
+        f"LONG-TERM MEMORY SUMMARY:\n"
+        f"{summary_text}\n\n"
+        f"RECENT MEMORIES / DOCUMENTS:\n"
+        f"{context}\n\n"
+        f"WEB RESULTS:\n"
+        f"{web_context[:3000]}\n\n"
+        f"RULE: Use GLOBAL MEMORY to answer about the user. "
+        f"Never say 'I don't remember' if it is in GLOBAL MEMORY. "
+        f"Use chat history for this conversation only. "
+        f"If WEB RESULTS are present, use them for current facts and mention the source. "
+        f"Answer with emoji. "
+        f"You can search the web for information and you can generate real images and videos. "
+        f"When user asks for an image/video, the system will generate it."
+    )
     groq_messages = [{"role": "system", "content": system[:4500]}] + history
     res = groq_chat(messages=groq_messages, max_tokens=3000)
     reply = res.choices[0].message.content
