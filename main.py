@@ -827,20 +827,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         conn0.commit()
     finally:
         conn0.close()
-
-    # --- FIX 1: CAPABILITY QUESTIONS - answer directly, don't ask Groq ---
-    if any(k in lower for k in ["can you search", "do you search", "can you browse", "can you go online", "do you have internet", "can you check the web", "are you able to search"]):
-        r = "Yes, I can search the web. ✅ Ask me anything current - like news today, football score, Bitcoin price, or weather - and I will search for it."
-        save_assistant_msg(chat_id, user_id, r)
-        return {"reply": r, "chat_id": chat_id}
-
-    if any(k in lower for k in ["can you generate image", "can you make image", "can you draw", "can you create image", "can you generate pictures", "can you generate images", "can you make images"]):
-        r = "Yes, I can generate real images. ✅ Just tell me what to draw, e.g. 'Draw a cat wearing sunglasses' and I will create it."
-        save_assistant_msg(chat_id, user_id, r)
-        return {"reply": r, "chat_id": chat_id}
-
-    # --- FIX 2: VIDEO KEYWORDS WERE EMPTY ---
-    video_keywords = ["generate video", "make a video", "create a video", "make video", "create video"]
+    video_keywords = []
     if any(k in lower for k in video_keywords):
         prompt = req.message
         blocked = is_blocked(prompt)
@@ -848,9 +835,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
             r = "This prompt is not allowed. Please try a different prompt."
             save_assistant_msg(chat_id, user_id, r)
             return {"reply": r, "chat_id": chat_id}
-
-    # --- FIX 3: IMAGE KEYWORDS WERE EMPTY ---
-    image_keywords = ["generate image", "create image", "make an image", "make a picture", "draw", "generate a picture", "create a picture", "make image", "draw me", "generate images", "create images"]
+    image_keywords = []
     if any(k in lower for k in image_keywords):
         prompt = req.message
         blocked = is_blocked(prompt)
@@ -862,7 +847,6 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         rr = f"<b>Generated:</b> {prompt}\n\nIMAGE::{image_url}"
         save_assistant_msg(chat_id, user_id, rr)
         return {"reply": rr, "chat_id": chat_id}
-
     search_triggers = ["what is", "who is", "when is", "where is", "how much", "price", "news", "today", "current", "latest", "score", "weather", "2025", "2026", "search", "find", "trending", "happening", "bitcoin", "crypto", "stock", "election", "football", "naira", "dollar"]
     needs_search = any(k in lower for k in search_triggers)
     if lower.startswith("search ") or lower.startswith("google "):
@@ -904,8 +888,7 @@ async def chat(request: Request, req: ChatRequest, background_tasks: BackgroundT
         clean.append(c)
     context = "\n\n---\n\n".join(clean)[:3000]
     user_msg = req.message.replace("\x00","")[:1500]
-    # --- FIX 4: CAPABILITY AT TOP, so it never gets cut off by [:4500] ---
-    system = (f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. You CAN search the web using live results provided below. You CAN generate real images and videos. Never say you cannot search or cannot generate images. Always finish your answer completely, do not stop mid-sentence.\n\nGLOBAL MEMORY - Facts about user across ALL chats (MUST USE):\n{chr(10).join(f'- {f}' for f in facts) if facts else 'No facts yet.'}\n\nLONG-TERM MEMORY SUMMARY:\n{summary_text}\n\nRECENT MEMORIES / DOCUMENTS:\n{context}\n\nWEB RESULTS:\n{web_context[:3000]}\n\nRULE: Use GLOBAL MEMORY to answer about the user. Never say 'I don't remember' if it is in GLOBAL MEMORY. Use chat history for this conversation only. If WEB RESULTS are present, use them for current facts and mention the source. Answer with emoji.")
+    system = (f"You are {req.persona}. Roast {req.roast_level}/10. Name OBANOR. Always finish your answer completely, do not stop mid-sentence.\n\nGLOBAL MEMORY - Facts about user across ALL chats (MUST USE):\n{chr(10).join(f'- {f}' for f in facts) if facts else 'No facts yet.'}\n\nLONG-TERM MEMORY SUMMARY:\n{summary_text}\n\nRECENT MEMORIES / DOCUMENTS:\n{context}\n\nWEB RESULTS:\n{web_context[:3000]}\n\nRULE: Use GLOBAL MEMORY to answer about the user. Never say 'I don't remember' if it is in GLOBAL MEMORY. Use chat history for this conversation only. If WEB RESULTS are present, use them for current facts and mention the source. Answer with emoji. You can search the web for information and you can generate real images and videos. When user asks for an image/video, the system will generate it.")
     groq_messages = [{"role": "system", "content": system[:4500]}] + history
     res = groq_chat(messages=groq_messages, max_tokens=3000)
     reply = res.choices[0].message.content
