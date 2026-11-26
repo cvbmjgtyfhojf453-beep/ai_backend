@@ -384,7 +384,7 @@ def send_email(to_email: str, subject: str, body: str):
         print(f"Email failed: {e}")
 
 def send_verify_email(to_email: str, token: str):
-    link = f"{os.getenv('BACKEND_URL', 'https://your-render-url.onrender.com')}/verify-email?token={token}"
+    link = f"{os.getenv('BACKEND_URL', 'https://ai-backend-puc4.onrender.com')}/verify-email?token={token}"
     send_email(to_email, "Obanor AI - Verify Your Email",
         f"Welcome to Obanor AI!\n\nClick this link to verify your email:\n\n{link}\n\nIf you didn't create this account, ignore this email.")
 
